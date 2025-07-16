@@ -1758,7 +1758,7 @@ class NaturalDroneController:
             return True
             
         except Exception as e:
-            print(f"❌ Failed to set wind direction: {e}")
+            #print(f"❌ Failed to set wind direction: {e}")
             return False
 
     def enable_turbulence(self, enable=True):
@@ -1771,7 +1771,7 @@ class NaturalDroneController:
             return True
             
         except Exception as e:
-            print(f"❌ Failed to toggle turbulence: {e}")
+            #print(f"❌ Failed to toggle turbulence: {e}")
             return False
 
     def enable_wind_gusts(self, enable=True):
@@ -1784,7 +1784,7 @@ class NaturalDroneController:
             return True
             
         except Exception as e:
-            print(f"❌ Failed to toggle wind gusts: {e}")
+            #print(f"❌ Failed to toggle wind gusts: {e}")
             return False
 
     def create_wind_zone(self, name, x_min, y_min, x_max, y_max, wind_multiplier=1.0, turbulence_level=0.1):
@@ -1906,10 +1906,11 @@ class NaturalDroneController:
         print("\n✅ Wind resistance test completed")
 
     def get_drone_script_handle(self):
-        """Get the correct script handle for the drone"""
+        #Get the correct script handle for the drone
         try:
             # Try different possible script names
             possible_names = [
+                './Quadcopter/Script',
                 '/Quadcopter/Script',
                 'Quadcopter/Script', 
                 '/Quadcopter/script',
@@ -1925,7 +1926,7 @@ class NaturalDroneController:
                 except:
                     continue
                     
-            print("❌ Could not find script handle")
+            #print("❌ Could not find script handle")
             return -1
             
         except Exception as e:
@@ -1942,7 +1943,7 @@ class NaturalDroneController:
             result = self.callScriptFunction('setWindStrength', self.getObject('/Quadcopter/Script'), strength)
             return result
         except Exception as e:
-            print(f"❌ Failed to set wind strength: {e}")
+            #print(f"❌ Failed to set wind strength: {e}")
             return False
 
 
@@ -2316,29 +2317,20 @@ class NaturalDroneController:
             return 85
 
     def take_picture(self, count=3, delay=1.5):
-        """ถ่ายรูปหลายรูปติดต่อกัน"""
+        """ถ่ายรูป"""
         if self.use_simulation:
-            print("🚁 ใช้กล้องในโปรแกรมจำลอง")
+            print("🚁 Using camera in simulator")
             if not self.camera:
-                print("❌ กล้องไม่ได้เริ่มต้น")
-                return []
+                print("❌ Camera not initialized")
+                return None
                 
-            saved_files = []
-            for i in range(count):
-                try:
-                    img_path = self.camera.simcapture()
-                    if img_path:
-                        # เปลี่ยนชื่อไฟล์ให้มีหมายเลข
-                        import shutil
-                        new_path = f"captured_images/sim_picture_{i+1}.jpg"
-                        shutil.move(img_path, new_path)
-                        saved_files.append(new_path)
-                        print(f"📸 ถ่ายรูปที่ {i+1}: {new_path}")
-                        time.sleep(delay)
-                except Exception as e:
-                    print(f"❌ ถ่ายรูปที่ {i+1} ไม่สำเร็จ: {e}")
-            return saved_files
-            
+            try:
+                img_path = self.camera.simcapture()
+                print(f"📸 ถ่ายรูปสำเร็จ: {img_path}")
+                return img_path
+            except Exception as e:
+                print(f"❌ ถ่ายรูปไม่สำเร็จ: {e}")
+                return None        
         elif self.use_real_drone:
             print("🚁 ใช้กล้องโดรนจริง")
             try:
@@ -2730,151 +2722,3 @@ class NaturalDroneController:
         
         print("👋 Drone controller disconnected")
 
-#testing method
-    def interactive_wind_control(self):
-        """โหมดควบคุมลมแบบ interactive"""
-        print("\n🎮 Interactive Wind Control Mode")
-        print("=" * 50)
-        print("Commands:")
-        print("  0-9: Set wind strength (0-9)")
-        print("  n/s/e/w: Wind direction (North/South/East/West)")
-        print("  t: Toggle turbulence")
-        print("  g: Toggle gusts")
-        print("  c: Calm conditions")
-        print("  m: Moderate wind preset")
-        print("  r: Strong wind preset")
-        print("  status: Show wind status")
-        print("  test: Quick wind test")
-        print("  q: Quit")
-        print("-" * 50)
-        
-        if not self.is_flying:
-            print("🚁 Taking off for wind testing...")
-            if not self.takeoff(height=1.5):
-                return False
-        
-        try:
-            while True:
-                command = input("\nWind Control> ").lower().strip()
-                
-                if command == 'q':
-                    break
-                elif command.isdigit() and 0 <= int(command) <= 9:
-                    strength = int(command)
-                    self.set_wind_strength(strength)
-                elif command == 'n':
-                    self.set_wind_direction(0, 1, 0)
-                    print("🧭 Wind from North")
-                elif command == 's':
-                    self.set_wind_direction(0, -1, 0)
-                    print("🧭 Wind from South")
-                elif command == 'e':
-                    self.set_wind_direction(1, 0, 0)
-                    print("🧭 Wind from East")
-                elif command == 'w':
-                    self.set_wind_direction(-1, 0, 0)
-                    print("🧭 Wind from West")
-                elif command == 't':
-                    current = self.wind_settings.get('turbulence', False)
-                    self.enable_turbulence(not current)
-                elif command == 'g':
-                    current = self.wind_settings.get('gusts', False)
-                    self.enable_wind_gusts(not current)
-                elif command == 'c':
-                    self.set_calm_conditions()
-                elif command == 'm':
-                    self.set_moderate_wind()
-                elif command == 'r':
-                    self.set_strong_wind()
-                elif command == 'status':
-                    self.get_wind_status()
-                    self.print_drone_status()
-                elif command == 'test':
-                    self.test_wind_effects_simple()
-                else:
-                    print("❌ Unknown command. Type 'q' to quit.")
-            
-            # ลงจอดก่อนออก
-            self.set_calm_conditions()
-            print("🛬 Landing...")
-            self.land()
-            
-            return True
-            
-        except KeyboardInterrupt:
-            print("\n\nInterrupted by user")
-            self.set_calm_conditions()
-            self.land()
-            return False
-            
-        except Exception as e:
-            print(f"❌ Interactive control error: {e}")
-            self.set_calm_conditions()
-            self.land()
-            return False
-
-
-
-def test_wind_system():
-    """ทดสอบระบบลมแบบสมบูรณ์"""
-    print("🌪️ Testing Wind System")
-    print("=" * 50)
-    
-    # สร้าง drone controller
-    drone = NaturalDroneController(use_simulation=True)
-    
-    if not drone.use_simulation:
-        print("❌ Simulation not available for wind testing")
-        return False
-    
-    try:
-        # ทดสอบพื้นฐาน
-        print("\n1. Testing basic wind functions...")
-        drone.takeoff(height=1.5)
-        time.sleep(2)
-        
-        # ทดสอบ wind effects
-        success = drone.test_wind_effects_simple()
-        
-        if success:
-            print("\n2. Testing wind demo...")
-            drone.start_wind_demo()
-        
-        return success
-        
-    except Exception as e:
-        print(f"❌ Wind system test failed: {e}")
-        return False
-    
-    finally:
-        drone.disconnect()
-
-def interactive_wind_demo():
-    """Demo แบบ interactive"""
-    print("🎮 Interactive Wind Demo")
-    print("=" * 50)
-    
-    drone = NaturalDroneController(use_simulation=True)
-    
-    if not drone.use_simulation:
-        print("❌ Simulation required")
-        return
-    
-    try:
-        drone.interactive_wind_control()
-    finally:
-        drone.disconnect()
-
-# Main execution
-if __name__ == "__main__":
-    print("🌪️ Wind Effects Test Suite")
-    print("=" * 60)
-    
-    choice = input("Select test:\n1. Automated Wind Test\n2. Interactive Wind Demo\n3. Exit\nChoice: ")
-    
-    if choice == "1":
-        test_wind_system()
-    elif choice == "2":
-        interactive_wind_demo()
-    else:
-        print("👋 Goodbye!")
