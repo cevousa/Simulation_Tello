@@ -57,55 +57,63 @@ class DroneOdysseyFieldCreator:
             return False
 
     def diagnose_and_fix_physics_issues(self):
-        """วินิจฉัยและแก้ไขปัญหาฟิสิกส์อัตโนมัติ"""
+        """แก้ไขปัญหาฟิสิกส์ - ลดการเรียกซ้ำ"""
         
-        print("🔍 กำลังตรวจสอบปัญหาฟิสิกส์...")
+        # เรียกครั้งเดียวเท่านั้น
+        if hasattr(self, '_physics_fixed'):
+            return
         
-        # 1. แก้ไขการตั้งค่าพื้น
+        print("🔍 กำลังตรวจสอบและแก้ไขปัญหาฟิสิกส์...")
+        
+        # ตั้งค่า physics engine
+        try:
+            self.sim.setFloatParameter(self.sim.floatparam_simulation_time_step, 0.005)
+            self.sim.setBoolParameter(self.sim.boolparam_realtime_simulation, True)
+            print("✅ ปรับการตั้งค่า physics engine")
+        except Exception as e:
+            print(f"⚠️ Physics engine warning: {e}")
+        
+        # แก้ไขการตั้งค่าพื้น
         floor_handles = []
-        for i in range(25):  # จำนวน floor tiles
-            try:
-                floor_name = f"Floor_{'ABCDE'[i//5]}{(i%5)+1}"
-                floor_handle = self.sim.getObject(floor_name)
-                floor_handles.append(floor_handle)
-            except:
-                continue
+        for obj in self.field_objects:
+            if obj.get('type') == 'floor':
+                floor_handles.append(obj['handle'])
         
-        # ตั้งค่าพื้นให้เป็น static และ respondable
         for floor_handle in floor_handles:
             self.sim.setObjectInt32Parameter(floor_handle, self.sim.shapeintparam_static, 1)
             self.sim.setObjectInt32Parameter(floor_handle, self.sim.shapeintparam_respondable, 1)
-            
+            self.sim.setShapeMass(floor_handle, 1000.0)
+        
         print("✅ แก้ไขการตั้งค่าพื้นเสร็จสิ้น")
-        
-        # 2. รีเซ็ต dynamic objects ทั้งหมด
-        for obj in self.field_objects:
-            if obj.get('type') == 'wind_responsive_a3':
-                self.sim.resetDynamicObject(obj['handle'])
-        
         print("🎯 การแก้ไขปัญหาฟิสิกส์เสร็จสมบูรณ์!")
+        
+        # ตั้งค่าให้ไม่เรียกซ้ำ
+        self._physics_fixed = True
+
+
 
 
     def clear_field(self):
-        """ล้างสนามทั้งหมด"""
-        try:
-            cleared_count = 0
+        """ล้างวัตถุในสนาม - ใช้ API ใหม่"""
+        if hasattr(self, 'field_objects') and self.field_objects:
+            handles_to_remove = []
+            
             for obj in self.field_objects:
+                if 'handle' in obj:
+                    handles_to_remove.append(obj['handle'])
+            
+            if handles_to_remove:
                 try:
-                    self.sim.removeObject(obj['handle'])
-                    if 'qr_board' in obj and obj['qr_board']:
-                        self.sim.removeObject(obj['qr_board'])
-                    if 'image_board' in obj and obj['image_board']:
-                        self.sim.removeObject(obj['image_board'])
-                    cleared_count += 1
-                except:
-                    pass
+                    # ✅ ใช้ removeObjects แทน removeObject
+                    self.sim.removeObjects(handles_to_remove)
+                    print(f"🗑️ Cleared {len(handles_to_remove)} field objects")
+                except Exception as e:
+                    print(f"⚠️ Warning during cleanup: {e}")
             
             self.field_objects.clear()
-            print(f"🗑️ Cleared {cleared_count} field objects")
-            
-        except Exception as e:
-            print(f"⚠️ Error clearing field: {e}")
+        else:
+            print("🗑️ Cleared 0 field objects")
+
 
     def list_field_objects(self):
         """แสดงรายการวัตถุในสนาม"""
@@ -567,39 +575,95 @@ class DroneOdysseyFieldCreator:
     # SECTION 6: PING PONG SYSTEM
     # ===============================================================
         
-    def create_ping_pong_ball(sim, position):
-        # 1. สร้างทรงกลม
-        ball = sim.createPrimitiveShape(1, [0.04,0.04,0.04])
+    def create_ping_pong_ball(self, position, name, ultra_sensitive=False):
+        """สร้างลูกปิงปองที่มีขนาดและน้ำหนักตามจริง"""
         
-        # 2. ปรับตำแหน่งเริ่มต้น
-        pos = position.copy()
-        pos[2] = 0.05
-        sim.setObjectPosition(ball, -1, pos)
+        # ข้อมูลจำเพาะลูกปิงปอง
+        diameter = 0.08  # เพิ่มขนาดเป็น 8cm เพื่อให้เห็นชัดเจน
+        mass_real = 0.0027  # 2.7g
         
-        # 3. ตั้งสีส้มเพื่อมองเห็นชัด
-        sim.setShapeColor(ball, None,
-            sim.colorcomponent_ambient_diffuse, [1,0.5,0])
-        
-        # 4. ตั้งมวลและสถานะ dynamic/respondable
-        sim.setShapeMass(ball, 0.0027)
-        sim.setObjectInt32Parameter(ball, sim.shapeintparam_static, 0)
-        sim.setObjectInt32Parameter(ball, sim.shapeintparam_respondable, 1)
-        
-        # 5. เปิด collision & rendering
-        sim.setObjectSpecialProperty(
-        ball,
-        sim.objectspecialproperty_collidable +
-        sim.objectspecialproperty_renderable +
-        sim.objectspecialproperty_detectable
+        # ✅ สร้างทรงกลมด้วยตัวเลขโดยตรง
+        options = 0  # ไม่ใส่ options พิเศษ
+        ball = self.sim.createPrimitiveShape(
+            1,  # 1 = sphere (แทน self.sim.primitiveshape_sphere)
+            [diameter, diameter, diameter],
+            options
         )
         
-        # 6. รีเซ็ตวัตถุไดนามิก
-        sim.resetDynamicObject(ball)
+        if ball == -1:
+            print(f"❌ ไม่สามารถสร้างลูกปิงปอง {name} ได้")
+            return None
+        
+        # ตั้งชื่อและตำแหน่ง
+        self.sim.setObjectAlias(ball, name)
+        pos = position.copy()
+        pos[2] = 0.1  # วางสูง 10cm
+        self.sim.setObjectPosition(ball, -1, pos)
+        
+        # ตั้งสีส้มสด
+        self.sim.setShapeColor(ball, None,
+            self.sim.colorcomponent_ambient_diffuse, [1.0, 0.5, 0.0])
+        
+        # ตั้งค่ามวล
+        mass = 0.001 if ultra_sensitive else mass_real
+        self.sim.setShapeMass(ball, mass)
+        
+        # ตั้งค่าให้เป็น dynamic object
+        self.sim.setObjectInt32Parameter(ball, self.sim.shapeintparam_static, 0)
+        self.sim.setObjectInt32Parameter(ball, self.sim.shapeintparam_respondable, 1)
+        
+        # ตั้งค่า moment of inertia
+        inertia = (2/5) * mass * (diameter/2)**2
+        inertia_matrix = [inertia, 0, 0, 0, inertia, 0, 0, 0, inertia]
+        transform = [1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0]
+        self.sim.setShapeInertia(ball, inertia_matrix, transform)
+        
+        # ตั้งค่าฟิสิกส์
+        try:
+            self.sim.setEngineFloatParam(3007, ball, 0.3)   # friction
+            self.sim.setEngineFloatParam(3008, ball, 0.7)   # restitution
+        except:
+            pass  # ถ้าไม่สามารถตั้งค่าได้ ให้ข้าม
+        
+        # รีเซ็ตวัตถุไดนามิกเป็นขั้นตอนสุดท้าย
+        self.sim.resetDynamicObject(ball)
+        
+        print(f"✅ สร้างลูกปิงปอง {name} สำเร็จ (ขนาด: {diameter}m)")
         return ball
+
+    def verify_ping_pong_shape(self):
+        """ตรวจสอบรูปร่างของลูกปิงปองที่สร้าง"""
+        print("🔍 ตรวจสอบรูปร่างลูกปิงปอง...")
+        
+        for obj in self.field_objects:
+            if obj.get('type') == 'wind_responsive_a3':
+                ball_handle = obj['handle']
+                ball_name = obj['name']
+                
+                try:
+                    # ตรวจสอบตำแหน่ง
+                    pos = self.sim.getObjectPosition(ball_handle, -1)
+                    
+                    # ตรวจสอบสถานะฟิสิกส์
+                    is_static = self.sim.getObjectInt32Parameter(ball_handle, self.sim.shapeintparam_static)
+                    is_respondable = self.sim.getObjectInt32Parameter(ball_handle, self.sim.shapeintparam_respondable)
+                    
+                    print(f"🏓 {ball_name}:")
+                    print(f"   Position: [{pos[0]:.3f}, {pos[1]:.3f}, {pos[2]:.3f}]")
+                    print(f"   Static: {is_static}, Respondable: {is_respondable}")
+                    
+                    # ตรวจสอบว่าลูกปิงปองอยู่เหนือพื้นหรือไม่
+                    if pos[2] > 0.02:
+                        print(f"   ✅ ตำแหน่งปกติ")
+                    else:
+                        print(f"   ⚠️ ตำแหน่งต่ำเกินไป")
+                        
+                except Exception as e:
+                    print(f"   ❌ ไม่สามารถตรวจสอบได้: {e}")
 
 
     def create_ping_pong_in_fenced_area(self):
-        """สร้างลูกปิงปองหลายลูกในช่อง A3 - แก้ไขความสูง"""
+        """สร้างลูกปิงปองหลายลูกในช่อง A3 - เวอร์ชันแก้ไขแล้ว"""
         grid_x, grid_y = 0, 2  # A3
         
         # ตำแหน่งกลางของช่อง A3
@@ -619,17 +683,16 @@ class DroneOdysseyFieldCreator:
         created_balls = []
         
         for i, (offset_x, offset_y) in enumerate(ball_patterns):
-            # ✅ ปรับความสูงให้เห็นชัดเจน
             ball_pos = [
                 center_pos[0] + offset_x,
                 center_pos[1] + offset_y,
-                0.05  # เพิ่มความสูงเป็น 5cm
+                0.05  # เริ่มต้นที่ความสูง 5cm
             ]
             
             name = f"PingPong_A3_{i+1}"
             
-            # สร้างลูกปิงปองที่ตอบสนองแรงลม
-            ball = self.create_ping_pong_ball(ball_pos, name)
+            # ใช้ฟังก์ชันที่แก้ไขแล้ว
+            ball = self.create_ping_pong_ball(ball_pos, name, ultra_sensitive=False)
             
             if ball:
                 ball_info = {
@@ -642,7 +705,7 @@ class DroneOdysseyFieldCreator:
                     'diameter_mm': 40,
                     'dynamic': True,
                     'wind_responsive': True,
-                    'color': 'orange'  # เพิ่มข้อมูลสี
+                    'color': 'orange'
                 }
                 
                 self.field_objects.append(ball_info)
@@ -652,7 +715,7 @@ class DroneOdysseyFieldCreator:
         return created_balls
 
     def check_ping_pong_visibility(self):
-        """ตรวจสอบและแก้ไขการมองเห็นลูกปิงปอง"""
+        """ตรวจสอบและแก้ไขลูกปิงปอง - เวอร์ชันแก้ไข deprecated"""
         print("🔍 ตรวจสอบลูกปิงปองทั้งหมด...")
         
         ping_pong_balls = []
@@ -666,26 +729,28 @@ class DroneOdysseyFieldCreator:
         
         for ball_info in ping_pong_balls:
             ball_handle = ball_info['handle']
+            ball_name = ball_info['name']
             
-            # ตรวจสอบตำแหน่งปัจจุบัน
-            current_pos = self.sim.getObjectPosition(ball_handle, -1)
-            
-            # ถ้าตำแหน่งต่ำเกินไป ให้ปรับขึ้น
-            if current_pos[2] < 0.02:
-                new_pos = [current_pos[0], current_pos[1], 0.05]
-                self.sim.setObjectPosition(ball_handle, -1, new_pos)
-                print(f"✅ ปรับตำแหน่งลูก {ball_info['name']} ขึ้นเป็น {new_pos[2]}m")
-            
-            # ตั้งค่าสีส้มใหม่
-            self.sim.setShapeColor(ball_handle, None, 
-                self.sim.colorcomponent_ambient_diffuse, [1.0, 0.5, 0.0])
-            
-            # ตรวจสอบว่าเป็น dynamic หรือไม่
-            is_static = self.sim.getObjectInt32Parameter(ball_handle, self.sim.shapeintparam_static)
-            is_respondable = self.sim.getObjectInt32Parameter(ball_handle, self.sim.shapeintparam_respondable)
-            
-            print(f"🏓 {ball_info['name']}: Static={is_static}, Respondable={is_respondable}, Pos={current_pos[2]:.3f}m")
-
+            # ✅ ใช้ removeObjects แทน removeObject
+            try:
+                self.sim.removeObjects([ball_handle])  # เปลี่ยนจาก removeObject
+                print(f"🗑️ ลบลูกปิงปอง {ball_name} เก่า")
+                
+                # สร้างใหม่ด้วยฟังก์ชันที่แก้ไขแล้ว
+                new_position = ball_info['position']
+                new_ball = self.create_ping_pong_ball(new_position, ball_name, False)
+                
+                if new_ball:
+                    ball_info['handle'] = new_ball
+                    print(f"✅ สร้างลูกปิงปอง {ball_name} ใหม่สำเร็จ")
+                else:
+                    print(f"❌ ไม่สามารถสร้างลูกปิงปอง {ball_name} ใหม่ได้")
+                    
+            except Exception as e:
+                print(f"❌ เกิดข้อผิดพลาดกับ {ball_name}: {e}")
+        
+        # ตรวจสอบรูปร่างหลังสร้างใหม่
+        self.verify_ping_pong_shape()
 
     def create_ping_pong_balls_in_grid(self, grid_x, grid_y, num_balls=7, name_prefix=None):
         """สร้างลูกปิงปองหลายลูกในช่องที่กำหนด - ตอบสนองแรงลม"""
@@ -859,7 +924,10 @@ class DroneOdysseyFieldCreator:
         
         # ล้างสนามก่อน
         self.clear_field()
-        
+
+        #  ตั้งค่า physics ก่อนสร้างวัตถุ
+        self.diagnose_and_fix_physics_issues()
+
         # 1. สร้างพื้นสนาม
         self.create_tiled_floor()
         
@@ -883,6 +951,9 @@ class DroneOdysseyFieldCreator:
         print("🟢 Creating green fence (ping pong boundary)...")
         self.create_livestock_fence_from_diagram()
      
+         # รอให้ physics เสถียร
+        time.sleep(1.5)
+
         # 6. สร้างลูกปิงปอง
         print("🏓 Creating ping pong balls...")
         self.create_ping_pong_in_fenced_area()
