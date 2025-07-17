@@ -36,7 +36,6 @@ except ImportError:
     SIMULATION_MODE = False
     print("⚠️ CoppeliaSim not available - Real drone mode only")
 
-#class คำสั่งสำหรับถ่ายรูปและสแกนคิวอาโค้ดในซิมมูเลเตอร์
 class DroneCamera:
     def __init__(self, sim):
         self.sim = sim
@@ -59,19 +58,22 @@ class DroneCamera:
         raise TimeoutError('No image_saved signal received')
     
     def simcapturebottom(self, timeout=5.0):
-        """สั่งให้ Lua เก็บภาพจากกล้องล่าง"""
-        self.sim.clearStringSignal('image_saved')
+        """สั่งให้ Lua เก็บภาพจากกล้องล่าง - แก้ไขเพื่อทำงานร่วมกับ proximity sensor"""
+        # Use the updated signal name
+        self.sim.clearStringSignal('bottom_camera_image_saved')
+        # Set the signal to '1' as expected by the new script
         self.sim.setStringSignal('capture_bottom_image', '1')
         
         start = time.time()
         while time.time() - start < timeout:
-            signal_data = self.sim.getStringSignal('image_saved')
+            # Check for the updated signal name
+            signal_data = self.sim.getStringSignal('bottom_camera_image_saved')
             if signal_data and isinstance(signal_data, str) and signal_data != '':
-                self.sim.clearStringSignal('image_saved')
+                self.sim.clearStringSignal('bottom_camera_image_saved')
                 return os.path.join(self.image_folder, signal_data)
             time.sleep(0.05)
-        raise TimeoutError('No image_saved signal received')
- 
+        raise TimeoutError('No bottom_camera_image_saved signal received')
+    
 class QRCodeScanner:
     def __init__(self):
         self.last_detected_codes = []
@@ -509,6 +511,382 @@ class DroneTello(Tello):
         except Exception as e:
             print(f"Cleanup error: {e}")
 
+class ProximitySensorManager:
+    """จัดการ Proximity Sensor แบบง่าย ๆ"""
+    
+    def __init__(self, sim, drone_handle):
+        """เริ่มต้น ProximitySensorManager
+        
+        Args:
+            sim: CoppeliaSim object
+            drone_handle: handle ของโดรน
+        """
+        self.sim = sim
+        self.drone_handle = drone_handle
+        self.sensor_handle = None
+        self.is_initialized = False
+        
+    def setup(self):
+        """ตั้งค่า proximity sensor"""
+        try:
+            # ลองหา proximity sensor ในโดรน
+            sensor_names = [
+                '/Quadcopter/proximitySensor',
+                'proximitySensor',
+                '/proximitySensor'
+            ]
+            
+            for name in sensor_names:
+                try:
+                    self.sensor_handle = self.sim.getObject(name)
+                    print(f"✅ เจอ proximity sensor: {name}")
+                    self.is_initialized = True
+                    return True
+                except:
+                    continue
+            
+            print("❌ ไม่เจอ proximity sensor")
+            return False
+            
+        except Exception as e:
+            print(f"❌ เกิดข้อผิดพลาดในการตั้งค่า sensor: {e}")
+            return False
+    
+    def read_distance(self):
+        """อ่านระยะห่างจาก sensor
+        
+        Returns:
+            float: ระยะห่าง (เมตร) หรือ None ถ้าไม่เจออะไร
+        """
+        if not self.is_initialized:
+            print("❌ Sensor ยังไม่ได้ตั้งค่า")
+            return None
+        
+        try:
+            # อ่านข้อมูลจาก proximity sensor
+            result, distance, point, object_handle, normal = self.sim.readProximitySensor(self.sensor_handle)
+            
+            if result:  # ถ้าเจออะไร
+                return distance
+            else:
+                return None
+                
+        except Exception as e:
+            print(f"❌ อ่าน sensor ไม่ได้: {e}")
+            return None
+    
+    def get_height(self):
+        """วัดความสูงจากพื้น
+        
+        Returns:
+            float: ความสูง (เมตร) หรือ None
+        """
+        distance = self.read_distance()
+        if distance is not None:
+            print(f"📏 ความสูง: {distance:.2f} เมตร")
+            return distance
+        else:
+            print("❌ วัดความสูงไม่ได้")
+            return None
+    
+    def is_close_to_ground(self, threshold=0.3):
+        """ตรวจสอบว่าใกล้พื้นหรือไม่
+        
+        Args:
+            threshold: ระยะห่างที่ถือว่าใกล้พื้น (เมตร)
+            
+        Returns:
+            bool: True ถ้าใกล้พื้น
+        """
+        height = self.get_height()
+        if height is not None:
+            return height <= threshold
+        return False
+    
+    def wait_until_height(self, target_height, timeout=10):
+        """รอจนกว่าจะถึงความสูงที่ต้องการ
+        
+        Args:
+            target_height: ความสูงเป้าหมาย (เมตร)
+            timeout: เวลาสูงสุดที่จะรอ (วินาที)
+            
+        Returns:
+            bool: True ถ้าถึงความสูงที่ต้องการ
+        """
+        import time
+        start_time = time.time()
+        
+        while time.time() - start_time < timeout:
+            height = self.get_height()
+            if height is not None and abs(height - target_height) < 0.1:
+                print(f"✅ ถึงความสูง {target_height:.2f} เมตรแล้ว")
+                return True
+            
+            time.sleep(0.1)
+        
+        print(f"⏰ หมดเวลารอ ({timeout} วินาที)")
+        return False
+    
+    def monitor_height(self, duration=5):
+        """ตรวจสอบความสูงแบบต่อเนื่อง
+        
+        Args:
+            duration: ระยะเวลาที่จะตรวจสอบ (วินาที)
+        """
+        import time
+        start_time = time.time()
+        
+        print(f"📡 ตรวจสอบความสูงเป็นเวลา {duration} วินาที...")
+        
+        while time.time() - start_time < duration:
+            height = self.get_height()
+            if height is not None:
+                print(f"  ⏱️ {time.time() - start_time:.1f}s: {height:.2f}m")
+            else:
+                print(f"  ⏱️ {time.time() - start_time:.1f}s: ไม่มีข้อมูล")
+            
+            time.sleep(0.5)
+        
+        print("✅ เสร็จสิ้นการตรวจสอบความสูง")
+
+    # ฟังก์ชันช่วยเหลือ
+    def get_sensor_info(self):
+        """ดูข้อมูลเซ็นเซอร์"""
+        if not self.is_initialized:
+            return "❌ Sensor ยังไม่ได้ตั้งค่า"
+        
+        try:
+            result, distance, point, object_handle, normal = self.sim.readProximitySensor(self.sensor_handle)
+            
+            info = {
+                'detected': result,
+                'distance': distance if result else None,
+                'detection_point': point if result else None,
+                'object_handle': object_handle if result else None
+            }
+            
+            return info
+            
+        except Exception as e:
+            return f"❌ ดึงข้อมูลไม่ได้: {e}"
+
+# เพิ่มฟังก์ชันใน NaturalDroneController class
+
+    def _init_proximity_sensors(self):
+        """เริ่มต้น proximity sensors"""
+        if self.use_simulation and self.sim and self.drone_handle:
+            try:
+                self.proximity_manager = ProximitySensorManager(self.sim, self.drone_handle)
+                success = self.proximity_manager.initialize_sensors()
+                if success:
+                    print("✅ Proximity sensors ready")
+                    return True
+                else:
+                    print("⚠️ Proximity sensors not available")
+                    return False
+            except Exception as e:
+                print(f"❌ Proximity sensor initialization error: {e}")
+                return False
+        return False
+    
+    def get_altitude(self):
+        """วัดความสูงจากพื้น"""
+        if hasattr(self, 'proximity_manager'):
+            return self.proximity_manager.get_height_from_ground()
+        else:
+            print("❌ Proximity sensors not initialized")
+            return None
+    
+    def read_proximity_sensor(self, sensor_name='bottom'):
+        """อ่านค่าจาก proximity sensor"""
+        if hasattr(self, 'proximity_manager'):
+            return self.proximity_manager.read_distance(sensor_name)
+        else:
+            print("❌ Proximity sensors not initialized")
+            return None
+    
+    def is_safe_altitude(self, min_height=0.3):
+        """ตรวจสอบว่าความสูงปลอดภัยหรือไม่"""
+        altitude = self.get_altitude()
+        if altitude is not None:
+            return altitude >= min_height
+        return False
+    
+    def auto_maintain_altitude(self, target_height=1.0, tolerance=0.1, max_time=30):
+        """รักษาความสูงอัตโนมัติ"""
+        if not self.is_flying:
+            print("❌ Drone must be flying first")
+            return False
+        
+        if not hasattr(self, 'proximity_manager'):
+            print("❌ Proximity sensors not available")
+            return False
+        
+        print(f"🎯 Maintaining altitude at {target_height}m (±{tolerance}m)")
+        
+        start_time = time.time()
+        successful_readings = 0
+        
+        while time.time() - start_time < max_time:
+            current_height = self.get_altitude()
+            
+            if current_height is not None:
+                successful_readings += 1
+                height_error = target_height - current_height
+                
+                print(f"📏 Current: {current_height:.2f}m, Target: {target_height:.2f}m, Error: {height_error:.2f}m")
+                
+                if abs(height_error) > tolerance:
+                    # ปรับความสูง
+                    if height_error > 0:
+                        # ต้องขึ้นสูงขึ้น
+                        adjust_distance = min(height_error, 0.3)  # จำกัดการเคลื่อนที่ครั้งละไม่เกิน 30cm
+                        print(f"⬆️ Moving up {adjust_distance:.2f}m")
+                        self.move_up(adjust_distance)
+                    else:
+                        # ต้องลงต่ำลง
+                        adjust_distance = min(abs(height_error), 0.3)
+                        print(f"⬇️ Moving down {adjust_distance:.2f}m")
+                        self.move_down(adjust_distance)
+                    
+                    time.sleep(1)  # รอให้โดรนเคลื่อนที่เสร็จ
+                else:
+                    print(f"✅ Altitude maintained at {current_height:.2f}m")
+                    return True
+            else:
+                print("⚠️ No altitude reading")
+            
+            time.sleep(0.5)
+        
+        print(f"⏰ Altitude maintenance timeout ({successful_readings} successful readings)")
+        return False
+    
+    def smart_landing(self, check_interval=0.5, safe_height=0.15):
+        """ลงจอดอัตโนมัติโดยตรวจสอบความสูง"""
+        if not self.is_flying:
+            print("⚠️ Drone is not flying")
+            return True
+        
+        if not hasattr(self, 'proximity_manager'):
+            print("❌ Proximity sensors not available - using standard landing")
+            return self.land()
+        
+        print("🛬 Starting smart landing with altitude monitoring...")
+        
+        while self.is_flying:
+            current_height = self.get_altitude()
+            
+            if current_height is not None:
+                print(f"📏 Current height: {current_height:.2f}m")
+                
+                if current_height <= safe_height:
+                    print("✅ Safe landing height reached")
+                    break
+                
+                # ลงทีละนิด
+                descent_step = min(0.2, current_height - safe_height)
+                print(f"⬇️ Descending {descent_step:.2f}m")
+                self.move_down(descent_step)
+                
+            else:
+                print("⚠️ No height reading - continuing descent")
+                self.move_down(0.1)
+            
+            time.sleep(check_interval)
+        
+        # ลงจอดขั้นสุดท้าย
+        print("🛬 Final landing...")
+        success = self.land()
+        
+        if success:
+            print("✅ Smart landing complete")
+        
+        return success
+    
+    def scan_surroundings_with_altitude(self, points=8):
+        """สแกนรอบตัวพร้อมวัดความสูง"""
+        if not self.is_flying:
+            print("❌ Drone must be flying first")
+            return []
+        
+        if not hasattr(self, 'proximity_manager'):
+            print("❌ Proximity sensors not available")
+            return []
+        
+        print(f"🔄 Scanning surroundings at {points} points...")
+        
+        results = []
+        rotation_step = 360 / points
+        
+        for i in range(points):
+            angle = i * rotation_step
+            print(f"📍 Point {i+1}/{points} (angle: {angle:.0f}°)")
+            
+            # วัดความสูง
+            altitude = self.get_altitude()
+            
+            # ถ่ายรูป
+            image_path = self.take_picture()
+            
+            result = {
+                'point': i + 1,
+                'angle': angle,
+                'altitude': altitude,
+                'image': image_path,
+                'timestamp': time.time()
+            }
+            
+            results.append(result)
+            
+            # หมุนไปจุดถัดไป (ยกเว้นจุดสุดท้าย)
+            if i < points - 1:
+                self.rotate_clockwise(rotation_step)
+                time.sleep(1)  # รอให้โดรนหมุนเสร็จ
+        
+        print("✅ Surroundings scan complete")
+        return results
+    
+    def monitor_flight_safety(self, min_altitude=0.3, max_altitude=3.0, check_interval=1.0):
+        """ตรวจสอบความปลอดภัยในการบินอย่างต่อเนื่อง"""
+        if not self.is_flying:
+            print("❌ Drone must be flying first")
+            return False
+        
+        if not hasattr(self, 'proximity_manager'):
+            print("❌ Proximity sensors not available")
+            return False
+        
+        print(f"🛡️ Flight safety monitoring active (altitude: {min_altitude}-{max_altitude}m)")
+        
+        try:
+            while self.is_flying:
+                altitude = self.get_altitude()
+                
+                if altitude is not None:
+                    if altitude < min_altitude:
+                        print(f"⚠️ ALTITUDE WARNING: Too low! ({altitude:.2f}m < {min_altitude}m)")
+                        print("⬆️ Auto-ascending for safety...")
+                        self.move_up(min_altitude - altitude + 0.1)
+                        
+                    elif altitude > max_altitude:
+                        print(f"⚠️ ALTITUDE WARNING: Too high! ({altitude:.2f}m > {max_altitude}m)")
+                        print("⬇️ Auto-descending for safety...")
+                        self.move_down(altitude - max_altitude + 0.1)
+                        
+                    else:
+                        print(f"✅ Altitude OK: {altitude:.2f}m")
+                
+                else:
+                    print("⚠️ No altitude reading")
+                
+                time.sleep(check_interval)
+                
+        except KeyboardInterrupt:
+            print("🛑 Safety monitoring stopped by user")
+        except Exception as e:
+            print(f"❌ Safety monitoring error: {e}")
+        
+        return True
 
 #class รวมคำสั่งหลัก
 class NaturalDroneController:
@@ -609,6 +987,17 @@ class NaturalDroneController:
             print(f"❌ Failed to connect to CoppeliaSim: {e}")
             self.use_simulation = False
             return False
+    
+    def stop_simulation(self):
+        """Stop the CoppeliaSim simulation if it's running"""
+        if hasattr(self, 'sim') and self.simulation_running:
+            try:
+                self.sim.stopSimulation()
+                self.simulation_running = False
+                print("🛑 Simulation stopped")
+            except Exception as e:
+                print(f"❌ Error stopping simulation: {e}")
+                
     # ---------------- WIND SYSTEM ----------------
     def setup_wind_system(self):
         """เริ่มต้นระบบลมแบบสมบูรณ์"""
@@ -846,7 +1235,7 @@ class NaturalDroneController:
                 print(f"    Final position: ({final_pos[0]:.2f}, {final_pos[1]:.2f}, {final_pos[2]:.2f})")
             self.set_calm_conditions()
             self.land()
-            print("✅ Wind demonstration complete!")
+            print("✅ Wind demonstration complete")
             return True
         except Exception as e:
             print(f"❌ Wind demonstration failed: {e}")
@@ -1697,8 +2086,6 @@ class NaturalDroneController:
         except Exception as e:
             print(f"❌ Debug error: {e}")
             return False
-
-    # ...existing code...
 
     def disconnect(self):
         if self.is_flying:
