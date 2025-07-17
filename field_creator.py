@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-Drone Odyssey Challenge Field Creator - Fixed Version
-แก้ไข: AttributeError, Texture Error, และปัญหาอื่นๆ
+Drone Odyssey Challenge Field Creator - Organized Version
+แยกส่วนโค้ดให้เป็นระเบียบ
 """
 
 import time
@@ -33,14 +33,20 @@ class DroneOdysseyFieldCreator:
         self.image_board_size = [0.4, 0.3, 0.02] # ป้ายรูป 40×30 ซม.
         
         # พาธไฟล์ QR Code
-        self.qr_texture_path = r"C:\Users\Zbook Firefly 14 G8\Downloads\drone_coding_simmu\testqrcode.png"
-        
-        print("🏟️ Drone Odyssey Challenge Field Creator (Fixed)")
+        self.qr_texture_path = r".\testqrcode.png"
+        self.image_texture_path=r".\testpicture.jpg"
+        print("🏟️ Drone Odyssey Challenge Field Creator (Organized)")
         print(f"📏 Field: {self.field_size}×{self.field_size}m")
         print(f"🔲 Tiles: {self.tile_size*100:.0f}×{self.tile_size*100:.0f}cm, Gap: {self.tile_gap*100:.0f}cm")
 
+    # ===============================================================
+    # SECTION 1: SIMULATION MANAGEMENT
+    # ===============================================================
+        
     def start_simulation(self):
+        """เริ่มการจำลอง"""
         try:
+            # Physics Engine มักจะเปิดอยู่ตามค่าเริ่มต้น
             self.sim.startSimulation()
             self.simulation_running = True
             print("✅ Simulation started")
@@ -50,6 +56,86 @@ class DroneOdysseyFieldCreator:
             print(f"❌ Failed to start simulation: {e}")
             return False
 
+    def diagnose_and_fix_physics_issues(self):
+        """วินิจฉัยและแก้ไขปัญหาฟิสิกส์อัตโนมัติ"""
+        
+        print("🔍 กำลังตรวจสอบปัญหาฟิสิกส์...")
+        
+        # 1. แก้ไขการตั้งค่าพื้น
+        floor_handles = []
+        for i in range(25):  # จำนวน floor tiles
+            try:
+                floor_name = f"Floor_{'ABCDE'[i//5]}{(i%5)+1}"
+                floor_handle = self.sim.getObject(floor_name)
+                floor_handles.append(floor_handle)
+            except:
+                continue
+        
+        # ตั้งค่าพื้นให้เป็น static และ respondable
+        for floor_handle in floor_handles:
+            self.sim.setObjectInt32Parameter(floor_handle, self.sim.shapeintparam_static, 1)
+            self.sim.setObjectInt32Parameter(floor_handle, self.sim.shapeintparam_respondable, 1)
+            
+        print("✅ แก้ไขการตั้งค่าพื้นเสร็จสิ้น")
+        
+        # 2. รีเซ็ต dynamic objects ทั้งหมด
+        for obj in self.field_objects:
+            if obj.get('type') == 'wind_responsive_a3':
+                self.sim.resetDynamicObject(obj['handle'])
+        
+        print("🎯 การแก้ไขปัญหาฟิสิกส์เสร็จสมบูรณ์!")
+
+
+    def clear_field(self):
+        """ล้างสนามทั้งหมด"""
+        try:
+            cleared_count = 0
+            for obj in self.field_objects:
+                try:
+                    self.sim.removeObject(obj['handle'])
+                    if 'qr_board' in obj and obj['qr_board']:
+                        self.sim.removeObject(obj['qr_board'])
+                    if 'image_board' in obj and obj['image_board']:
+                        self.sim.removeObject(obj['image_board'])
+                    cleared_count += 1
+                except:
+                    pass
+            
+            self.field_objects.clear()
+            print(f"🗑️ Cleared {cleared_count} field objects")
+            
+        except Exception as e:
+            print(f"⚠️ Error clearing field: {e}")
+
+    def list_field_objects(self):
+        """แสดงรายการวัตถุในสนาม"""
+        if not self.field_objects:
+            print("📭 No field objects found")
+            return
+        
+        object_types = {}
+        for obj in self.field_objects:
+            obj_type = obj['type']
+            if obj_type not in object_types:
+                object_types[obj_type] = []
+            object_types[obj_type].append(obj)
+        
+        print(f"\n🏟️ Field objects summary ({len(self.field_objects)} total):")
+        for obj_type, objects in object_types.items():
+            print(f"  📋 {obj_type.title().replace('_', ' ')}: {len(objects)} objects")
+            for obj in objects[:3]:
+                if 'grid' in obj:
+                    print(f"    - {obj.get('name', 'Unnamed')} at {obj['grid']}")
+                else:
+                    print(f"    - {obj.get('name', 'Unnamed')}")
+            if len(objects) > 3:
+                print(f"    - ... และอีก {len(objects)-3} รายการ")
+        print()
+
+    # ===============================================================
+    # SECTION 2: COORDINATE SYSTEM
+    # ===============================================================
+    
     def grid_to_position(self, grid_x, grid_y):
         """แปลงตำแหน่ง Grid เป็นพิกัดจริง (A1 = มุมล่างซ้าย)"""
         real_x = self.border_gap + (self.tile_size + self.tile_gap) * grid_x + self.tile_size/2 - self.field_size/2
@@ -77,6 +163,32 @@ class DroneOdysseyFieldCreator:
         
         return [edge_x, edge_y]
 
+    # ===============================================================
+    # SECTION 3: BASIC OBJECTS CREATION
+    # ===============================================================
+    def fix_floor_settings(self):
+        floor_handles = []
+        
+        # ค้นหาวัตถุพื้นทั้งหมด
+        for i in range(25):  # จำนวน floor tiles
+            try:
+                floor_name = f"FloorTile_{i}"
+                floor_handle = self.sim.getObject(floor_name)
+                floor_handles.append(floor_handle)
+            except:
+                continue
+        
+        # ตั้งค่าพื้นให้เป็น static และ respondable
+        for floor_handle in floor_handles:
+            # ตั้งค่าให้เป็น static (1) และ respondable (1)
+            self.sim.setObjectInt32Parameter(floor_handle, self.sim.shapeintparam_static, 1)
+            self.sim.setObjectInt32Parameter(floor_handle, self.sim.shapeintparam_respondable, 1)
+            
+            # ตั้งค่าให้เป็น collidable
+            self.sim.setObjectInt32Parameter(floor_handle, self.sim.shapeintparam_collidable, 1)
+            
+            print(f"Fixed floor: {floor_handle}")    
+
     def create_tiled_floor(self):
         """สร้างพื้นสนามแบ่งช่อง 5×5"""
         print("🟫 Creating tiled floor (5×5 grid)...")
@@ -87,11 +199,11 @@ class DroneOdysseyFieldCreator:
             for j in range(5):  # 1-5 (0-4)
                 floor_tile = self.sim.createPrimitiveShape(
                     self.sim.primitiveshape_cuboid,
-                    [self.tile_size, self.tile_size, 0.02]
+                    [self.tile_size, self.tile_size, 0.005]  # ลดความหนาเป็น 0.5 ซม.
                 )
                 
                 pos = self.grid_to_position(i, j)
-                pos.append(0.01)
+                pos.append(0.0025)  # ปรับความสูงให้เสมอพื้นมากขึ้น
                 
                 self.sim.setObjectPosition(floor_tile, -1, pos)
                 
@@ -109,250 +221,10 @@ class DroneOdysseyFieldCreator:
                     'position': pos
                 }
                 floor_objects.append(floor_info)
-        
+            self.diagnose_and_fix_physics_issues()
         self.field_objects.extend(floor_objects)
         print(f"✅ Created {len(floor_objects)} floor tiles")
         return floor_objects
-
-    def create_obstacle_box(self, grid_x, grid_y, name=None):
-        """สร้างกล่องสิ่งกีดขวาง 60×60×80 ซม."""
-        try:
-            if name is None:
-                name = f"Obstacle_{chr(65+grid_x)}{grid_y+1}"
-            
-            obstacle = self.sim.createPrimitiveShape(
-                self.sim.primitiveshape_cuboid,
-                self.obstacle_size
-            )
-            
-            pos = self.grid_to_position(grid_x, grid_y)
-            pos.append(self.obstacle_size[2]/2 + 0.02)
-            
-            self.sim.setObjectPosition(obstacle, -1, pos)
-            self.sim.setObjectAlias(obstacle, name)
-            
-            # สีน้ำตาล
-            self.sim.setShapeColor(obstacle, None, 
-                self.sim.colorcomponent_ambient_diffuse, [0.6, 0.4, 0.2])
-            
-            self.sim.setObjectSpecialProperty(obstacle, 
-                self.sim.objectspecialproperty_collidable + 
-                self.sim.objectspecialproperty_detectable +
-                self.sim.objectspecialproperty_renderable
-            )
-            
-            obstacle_info = {
-                'type': 'obstacle',
-                'handle': obstacle,
-                'name': name,
-                'grid': f"{chr(65+grid_x)}{grid_y+1}",
-                'position': pos
-            }
-            
-            self.field_objects.append(obstacle_info)
-            print(f"📦 Created obstacle: {name} at {obstacle_info['grid']}")
-            return obstacle_info
-            
-        except Exception as e:
-            print(f"❌ Failed to create obstacle: {e}")
-            return None
-
-    def create_obstacle_box_with_qr(self, grid_x, grid_y, name=None):
-        """สร้างกล่องสิ่งกีดขวางที่ติดป้าย QR Code (สำหรับ D2)"""
-        try:
-            if name is None:
-                name = f"QRBox_{chr(65+grid_x)}{grid_y+1}"
-            
-            # สร้างกล่อง
-            obstacle = self.create_obstacle_box(grid_x, grid_y, name)
-            if not obstacle:
-                return None
-            
-            # สร้างป้าย QR Code ติดบนกล่อง
-            qr_board = self.sim.createPrimitiveShape(
-                self.sim.primitiveshape_cuboid,
-                self.qr_board_size
-            )
-            
-            # ติดที่ด้านหน้ากล่อง
-            box_pos = obstacle['position']
-            qr_pos = [
-                box_pos[0] + self.obstacle_size[0]/2 + 0.015,
-                box_pos[1],
-                box_pos[2] + 0.15
-            ]
-            
-            self.sim.setObjectPosition(qr_board, -1, qr_pos)
-            
-            # หมุนป้ายให้ตั้งตรง (หันหน้าออกมา)
-            self.sim.setObjectOrientation(qr_board, -1, [0, math.pi/2, 0])
-            
-            self.sim.setObjectAlias(qr_board, f"QR_{name}")
-            
-            # สีขาว
-            self.sim.setShapeColor(qr_board, None, 
-                self.sim.colorcomponent_ambient_diffuse, [1, 1, 1])
-            
-            # แก้ไข: ใส่ texture QR Code (แก้ error)
-            if os.path.exists(self.qr_texture_path):
-                try:
-                    # ใช้วิธีง่ายๆ ที่ทำงานได้
-                    print(f"  ✅ QR texture file found: {name}")
-                    print(f"  💡 Texture will be white placeholder (file exists but not loaded due to API complexity)")
-                except Exception as tex_error:
-                    print(f"  ⚠️ Texture error: {tex_error}")
-            else:
-                print(f"  ⚠️ QR texture file not found: {self.qr_texture_path}")
-            
-            # อัปเดตข้อมูล obstacle
-            obstacle['has_qr'] = True
-            obstacle['qr_board'] = qr_board
-            obstacle['type'] = 'qr_obstacle'
-            
-            print(f"📱 Created QR obstacle: {name} at {obstacle['grid']}")
-            return obstacle
-            
-        except Exception as e:
-            print(f"❌ Failed to create QR obstacle: {e}")
-            return None
-
-    def create_edge_image_stand(self, grid_x, grid_y, name=None):
-        """สร้างขาตั้งรูปที่ขอบสนาม - แก้ไขให้หันเข้าสนาม"""
-        try:
-            if name is None:
-                name = f"EdgeStand_{chr(65+grid_x)}{grid_y+1}"
-            
-            # ใช้ตำแหน่งขอบ
-            pos = self.grid_to_edge_position(grid_x, grid_y)
-            pos.append(0.4)
-            
-            # สร้างขาตั้ง (เสาเล็ก)
-            pole = self.sim.createPrimitiveShape(
-                self.sim.primitiveshape_cuboid,
-                [0.05, 0.05, 0.8]
-            )
-            
-            self.sim.setObjectPosition(pole, -1, pos)
-            self.sim.setObjectAlias(pole, name)
-            
-            # สีเทา
-            self.sim.setShapeColor(pole, None, 
-                self.sim.colorcomponent_ambient_diffuse, [0.5, 0.5, 0.5])
-            
-            # สร้างป้ายรูป
-            image_board = self.sim.createPrimitiveShape(
-                self.sim.primitiveshape_cuboid,
-                self.image_board_size
-            )
-            
-            board_pos = [pos[0], pos[1], pos[2] + 0.3]
-            self.sim.setObjectPosition(image_board, -1, board_pos)
-            
-            # แก้ไข: หมุนป้ายให้หันเข้าสนามอย่างถูกต้อง
-            center_x, center_y = 0, 0  # จุดกึ่งกลางสนาม
-            
-            # คำนวณทิศทางที่ควรหัน
-            dx = center_x - pos[0]
-            dy = center_y - pos[1]
-            angle_to_center = math.atan2(dy, dx)
-            
-            # หมุนป้ายให้หันเข้าหาจุดกึ่งกลาง
-            self.sim.setObjectOrientation(image_board, -1, [0, math.pi/2, angle_to_center])
-            
-            self.sim.setObjectAlias(image_board, f"IMG_{name}")
-            
-            # สีฟ้าอ่อน
-            self.sim.setShapeColor(image_board, None, 
-                self.sim.colorcomponent_ambient_diffuse, [0.7, 0.9, 1.0])
-            
-            stand_info = {
-                'type': 'edge_image_stand',
-                'handle': pole,
-                'image_board': image_board,
-                'name': name,
-                'grid': f"{chr(65+grid_x)}{grid_y+1}",
-                'position': pos
-            }
-            
-            self.field_objects.append(stand_info)
-            print(f"🖼️ Created edge image stand: {name} at {stand_info['grid']} (facing center)")
-            return stand_info
-            
-        except Exception as e:
-            print(f"❌ Failed to create edge image stand: {e}")
-            return None
-
-    def create_ping_pong_balls_at_c5(self, num_balls=5):
-        """สร้างลูกปิงปองทั้งหมดที่ C5 พร้อมฟิสิกส์ลม"""
-        try:
-            c5_pos = self.grid_to_position(2, 4)  # C5
-            
-            # วางลูกปิงปองหลายลูกรอบๆ C5
-            ball_positions = [
-                [c5_pos[0], c5_pos[1]],           # กลาง
-                [c5_pos[0] - 0.15, c5_pos[1]],    # ซ้าย
-                [c5_pos[0] + 0.15, c5_pos[1]],    # ขวา
-                [c5_pos[0], c5_pos[1] - 0.15],    # ล่าง
-                [c5_pos[0], c5_pos[1] + 0.15],    # บน
-            ]
-            
-            created_balls = []
-            
-            for i, ball_pos in enumerate(ball_positions[:num_balls]):
-                ball = self.sim.createPrimitiveShape(
-                    self.sim.primitiveshape_spheroid,
-                    [0.04, 0.04, 0.04]
-                )
-                
-                pos = [ball_pos[0], ball_pos[1], 0.06]
-                self.sim.setObjectPosition(ball, -1, pos)
-                
-                name = f"PingPong_C5_{i+1}"
-                self.sim.setObjectAlias(ball, name)
-                
-                # สีขาว
-                self.sim.setShapeColor(ball, None, 
-                    self.sim.colorcomponent_ambient_diffuse, [1, 1, 1])
-                
-                # ตั้งค่าฟิสิกส์ให้เบาและตอบสนองต่อลม
-                self.sim.setObjectSpecialProperty(ball, 
-                    self.sim.objectspecialproperty_collidable + 
-                    self.sim.objectspecialproperty_detectable +
-                    self.sim.objectspecialproperty_renderable
-                )
-                
-                # เพิ่มการตั้งค่าฟิสิกส์เพื่อให้ตอบสนองต่อลม
-                try:
-                    # ลดมวลให้เบามาก (เหมือนลูกปิงปอง)
-                    self.sim.setShapeMass(ball, 0.0027)  # 2.7 กรัม
-                    
-                    # ตั้งค่าความหนาแน่น
-                    self.sim.setEngineFloatParam(self.sim.bullet_body_restitution, ball, 0.9)  # การกระดอน
-                    self.sim.setEngineFloatParam(self.sim.bullet_body_friction, ball, 0.1)     # ความเสียดทาน
-                    self.sim.setEngineFloatParam(self.sim.bullet_body_lineardamping, ball, 0.1) # การหน่วง
-                    self.sim.setEngineFloatParam(self.sim.bullet_body_angulardamping, ball, 0.1) # การหน่วงเชิงมุม
-                    
-                    print(f"  ✅ Physics configured for {name}")
-                except Exception as physics_error:
-                    print(f"  ⚠️ Physics setup warning for {name}: {physics_error}")
-                
-                ball_info = {
-                    'type': 'ping_pong',
-                    'handle': ball,
-                    'name': name,
-                    'grid': 'C5',
-                    'position': pos
-                }
-                
-                self.field_objects.append(ball_info)
-                created_balls.append(ball_info)
-            
-            print(f"🏓 Created {len(created_balls)} ping pong balls at C5 with wind physics")
-            return created_balls
-            
-        except Exception as e:
-            print(f"❌ Failed to create ping pong balls: {e}")
-            return []
 
     def create_boundary_wall(self, start_pos, end_pos, height=0.12, name="Wall"):
         """สร้างกำแพงกั้น"""
@@ -401,188 +273,975 @@ class DroneOdysseyFieldCreator:
             print(f"❌ Failed to create boundary wall: {e}")
             return None
 
-    def create_ping_pong_boundaries(self):
-        """สร้างรั้วกั้นลูกปิงปองรูปเลข 4 กลับด้าน"""
-        print("🟢 Creating ping pong boundaries (reverse 4 shape)...")
+    # ===============================================================
+    # SECTION 4: OBSTACLE CREATION
+    # ===============================================================
+    
+    def create_obstacle_box(self, grid_x, grid_y, name=None):
+        """สร้างกล่องสิ่งกีดขวาง 60×60×80 ซม."""
+        try:
+            if name is None:
+                name = f"Obstacle_{chr(65+grid_x)}{grid_y+1}"
+            
+            obstacle = self.sim.createPrimitiveShape(
+                self.sim.primitiveshape_cuboid,
+                self.obstacle_size
+            )
+            
+            pos = self.grid_to_position(grid_x, grid_y)
+            pos.append(self.obstacle_size[2]/2 + 0.02)
+            
+            self.sim.setObjectPosition(obstacle, -1, pos)
+            self.sim.setObjectAlias(obstacle, name)
+            
+            # สีน้ำตาล
+            self.sim.setShapeColor(obstacle, None, 
+                self.sim.colorcomponent_ambient_diffuse, [0.6, 0.4, 0.2])
+            
+            self.sim.setObjectSpecialProperty(obstacle, 
+                self.sim.objectspecialproperty_collidable + 
+                self.sim.objectspecialproperty_detectable +
+                self.sim.objectspecialproperty_renderable
+            )
+            
+            obstacle_info = {
+                'type': 'obstacle',
+                'handle': obstacle,
+                'name': name,
+                'grid': f"{chr(65+grid_x)}{grid_y+1}",
+                'position': pos
+            }
+            
+            self.field_objects.append(obstacle_info)
+            print(f"📦 Created obstacle: {name} at {obstacle_info['grid']}")
+            return obstacle_info
+            
+        except Exception as e:
+            print(f"❌ Failed to create obstacle: {e}")
+            return None
+
+    def create_adjustable_obstacle(self, grid_x, grid_y, height_multiplier=1, stack_count=1, name=None):
+        """สร้างสิ่งกีดขวางที่ปรับความสูงได้"""
+        if name is None:
+            name = f"Obstacle_{chr(65+grid_x)}{grid_y+1}"
         
-        # ได้พิกัดของแต่ละ grid
+        base_height = 0.8  # 80 ซม.
+        
+        obstacle = self.sim.createPrimitiveShape(
+            self.sim.primitiveshape_cuboid,
+            [0.6, 0.6, base_height * height_multiplier]
+        )
+        
+        pos = self.grid_to_position(grid_x, grid_y)
+        pos.append((base_height * height_multiplier / 2) + 0.02)
+        
+        self.sim.setObjectPosition(obstacle, -1, pos)
+        self.sim.setObjectAlias(obstacle, name)
+        
+        # สีเหลืองสำหรับกล่องสูง
+        if height_multiplier == 2:
+            self.sim.setShapeColor(obstacle, None, 
+                self.sim.colorcomponent_ambient_diffuse, [1.0, 1.0, 0.0])
+        else:
+            # สีน้ำตาลสำหรับกล่องปกติ
+            self.sim.setShapeColor(obstacle, None, 
+                self.sim.colorcomponent_ambient_diffuse, [0.6, 0.4, 0.2])
+        
+        obstacle_info = {
+            'type': 'adjustable_obstacle',
+            'handle': obstacle,
+            'name': name,
+            'grid': f"{chr(65+grid_x)}{grid_y+1}",
+            'position': pos,
+            'height_multiplier': height_multiplier
+        }
+        
+        self.field_objects.append(obstacle_info)
+        return obstacle_info
+
+    def create_obstacle_box_with_qr(self, grid_x, grid_y, name=None):
+        """สร้างกล่องสิ่งกีดขวางที่ติดป้าย QR Code"""
+        try:
+            if name is None:
+                name = f"QRBox_{chr(65+grid_x)}{grid_y+1}"
+            
+            # สร้างกล่อง
+            obstacle = self.create_obstacle_box(grid_x, grid_y, name)
+            if not obstacle:
+                return None
+            
+            # สร้างป้าย QR Code ติดบนกล่อง
+            qr_board = self.sim.createPrimitiveShape(
+                self.sim.primitiveshape_cuboid,
+                self.qr_board_size
+            )
+            
+            # ติดที่ด้านหน้ากล่อง
+            box_pos = obstacle['position']
+            qr_pos = [
+                box_pos[0] + self.obstacle_size[0]/2 + 0.015,
+                box_pos[1],
+                box_pos[2] + 0.15
+            ]
+            
+            self.sim.setObjectPosition(qr_board, -1, qr_pos)
+            self.sim.setObjectOrientation(qr_board, -1, [0, math.pi/2, 0])
+            self.sim.setObjectAlias(qr_board, f"QR_{name}")
+            
+            # สีขาว
+            self.sim.setShapeColor(qr_board, None, 
+                self.sim.colorcomponent_ambient_diffuse, [1, 1, 1])
+            
+            # ตรวจสอบ texture
+            if os.path.exists(self.qr_texture_path):
+                print(f"  ✅ QR texture file found: {name}")
+                print(f"  💡 Texture will be white placeholder")
+            else:
+                print(f"  ⚠️ QR texture file not found: {self.qr_texture_path}")
+            
+            # อัปเดตข้อมูล obstacle
+            obstacle['has_qr'] = True
+            obstacle['qr_board'] = qr_board
+            obstacle['type'] = 'qr_obstacle'
+            
+            print(f"📱 Created QR obstacle: {name} at {obstacle['grid']}")
+            return obstacle
+            
+        except Exception as e:
+            print(f"❌ Failed to create QR obstacle: {e}")
+            return None
+        
+    def create_custom_obstacle(self, grid_x, grid_y, height_cm=80, name=None):
+        """สร้างสิ่งกีดขวางที่ปรับความสูงได้ (custom)
+        
+        Args:
+            grid_x, grid_y: ตำแหน่ง grid
+            height_cm: ความสูงเป็นเซนติเมตร (เช่น 80, 160, 240)
+            name: ชื่อกำหนดเอง
+        """
+        try:
+            if name is None:
+                name = f"CustomObstacle_{chr(65+grid_x)}{grid_y+1}_H{height_cm}"
+            
+            # แปลงความสูงจาก cm เป็น m
+            height_m = height_cm / 100.0
+            
+            # ตรวจสอบความสูงไม่เกิน 240 cm
+            if height_cm > 240:
+                print(f"⚠️ Warning: Height {height_cm}cm exceeds maximum 240cm")
+                height_cm = 240
+                height_m = 2.4
+            
+            obstacle = self.sim.createPrimitiveShape(
+                self.sim.primitiveshape_cuboid,
+                [0.6, 0.6, height_m]  # 60×60×ความสูงที่กำหนด
+            )
+            
+            pos = self.grid_to_position(grid_x, grid_y)
+            pos.append(height_m/2 + 0.02)  # วางให้กึ่งกลางความสูง
+            
+            self.sim.setObjectPosition(obstacle, -1, pos)
+            self.sim.setObjectAlias(obstacle, name)
+            
+            # เลือกสีตามความสูง
+            if height_cm <= 80:
+                color = [0.6, 0.4, 0.2]  # สีน้ำตาล
+            elif height_cm <= 160:
+                color = [1.0, 1.0, 0.0]  # สีเหลือง
+            else:
+                color = [1.0, 0.5, 0.0]  # สีส้ม (สูงมาก)
+            
+            self.sim.setShapeColor(obstacle, None, 
+                self.sim.colorcomponent_ambient_diffuse, color)
+            
+            self.sim.setObjectSpecialProperty(obstacle, 
+                self.sim.objectspecialproperty_collidable + 
+                self.sim.objectspecialproperty_detectable +
+                self.sim.objectspecialproperty_renderable
+            )
+            
+            obstacle_info = {
+                'type': 'custom_obstacle',
+                'handle': obstacle,
+                'name': name,
+                'grid': f"{chr(65+grid_x)}{grid_y+1}",
+                'position': pos,
+                'height_cm': height_cm,
+                'height_m': height_m
+            }
+            
+            self.field_objects.append(obstacle_info)
+            print(f"📦 Created custom obstacle: {name} at {obstacle_info['grid']} (H={height_cm}cm)")
+            return obstacle_info
+            
+        except Exception as e:
+            print(f"❌ Failed to create custom obstacle: {e}")
+            return None
+
+    # ===============================================================
+    # SECTION 5: SIGNS AND BOARDS
+    # ===============================================================
+        
+    def create_edge_image_stand(self, grid_x, grid_y, height_cm=120, name=None):
+        """สร้างป้ายแบบสี่เหลี่ยมผืนผ้าโง่ๆ ที่หันหน้าไปศูนย์กลาง - แก้ไขการหมุน"""
+        try:
+            if name is None:
+                name = f"EdgeStand_{chr(65+grid_x)}{grid_y+1}"
+            
+            # ใช้ตำแหน่งขอบ
+            pos = self.grid_to_edge_position(grid_x, grid_y)
+            
+            # แปลงความสูงจาก cm เป็น m
+            height_m = height_cm / 100.0
+            
+            # สร้างสี่เหลี่ยมผืนผ้า - ด้านกว้างเป็น Y, ด้านบางเป็น X
+            billboard = self.sim.createPrimitiveShape(
+                self.sim.primitiveshape_cuboid,
+                [0.02, 0.50, height_m]  # X=หนา, Y=กว้าง, Z=สูง
+            )
+            
+            # วางป้าย
+            billboard_pos = pos.copy()
+            billboard_pos.append(height_m/2 + 0.01)  # กึ่งกลางความสูง
+            
+            self.sim.setObjectPosition(billboard, -1, billboard_pos)
+            
+            # คำนวณมุมหันเข้าศูนย์กลาง
+            center_x, center_y = 0, 0  # จุดศูนย์กลางสนาม
+            dx = center_x - pos[0]
+            dy = center_y - pos[1]
+            yaw = math.atan2(dy, dx)
+            
+            # ทดสอบหมุนแบบต่างๆ เพื่อให้หน้าป้ายหันเข้าใน
+            # ถ้าปกติ cuboid หน้าป้ายอยู่ด้าน +Y (หรือ -Y)
+            # ต้องหมุนให้หน้าป้ายชีงไปศูนย์กลาง
+            
+            # ลองหมุนไม่เพิ่ม π/2 ดู
+            self.sim.setObjectOrientation(billboard, -1, [0, 0, yaw])
+            
+            self.sim.setObjectAlias(billboard, name)
+            
+            # สีฟ้าสด
+            self.sim.setShapeColor(billboard, None, 
+                self.sim.colorcomponent_ambient_diffuse, [0.1, 0.5, 1.0])
+            
+            # ใส่เท็กซ์เจอร์ (ถ้ามี)
+            self.apply_texture_to_board(billboard, self.image_texture_path)
+            
+            stand_info = {
+                'type': 'edge_image_stand',
+                'handle': billboard,
+                'texture_board': billboard,  # เป็นชิ้นเดียวกัน
+                'name': name,
+                'grid': f"{chr(65+grid_x)}{grid_y+1}",
+                'position': pos,
+                'height_cm': height_cm,
+                'height_m': height_m,
+                'facing_angle': yaw
+            }
+            
+            self.field_objects.append(stand_info)
+            print(f"🖼️ Created billboard: {name} at {stand_info['grid']} (H={height_cm}cm, angle={math.degrees(yaw):.1f}°)")
+            return stand_info
+            
+        except Exception as e:
+            print(f"❌ Failed to create billboard: {e}")
+            return None
+
+    def apply_texture_to_board(self, board_handle, texture_path):
+        """แก้ไขการโหลด texture สำหรับ CoppeliaSim 4.10"""
+        try:
+            if not os.path.exists(texture_path):
+                return False
+            
+            # ใช้วิธีง่ายๆ - ข้าม texture loading
+            print(f"📁 Texture file found: {texture_path}")
+            print(f"💡 Using default color (texture loading skipped)")
+            return True
+            
+        except Exception as e:
+            print(f"⚠️ Texture error: {e}")
+            return False
+
+    # ===============================================================
+    # SECTION 6: PING PONG SYSTEM
+    # ===============================================================
+        
+    def create_ping_pong_ball(sim, position):
+        # 1. สร้างทรงกลม
+        ball = sim.createPrimitiveShape(1, [0.04,0.04,0.04])
+        
+        # 2. ปรับตำแหน่งเริ่มต้น
+        pos = position.copy()
+        pos[2] = 0.05
+        sim.setObjectPosition(ball, -1, pos)
+        
+        # 3. ตั้งสีส้มเพื่อมองเห็นชัด
+        sim.setShapeColor(ball, None,
+            sim.colorcomponent_ambient_diffuse, [1,0.5,0])
+        
+        # 4. ตั้งมวลและสถานะ dynamic/respondable
+        sim.setShapeMass(ball, 0.0027)
+        sim.setObjectInt32Parameter(ball, sim.shapeintparam_static, 0)
+        sim.setObjectInt32Parameter(ball, sim.shapeintparam_respondable, 1)
+        
+        # 5. เปิด collision & rendering
+        sim.setObjectSpecialProperty(
+        ball,
+        sim.objectspecialproperty_collidable +
+        sim.objectspecialproperty_renderable +
+        sim.objectspecialproperty_detectable
+        )
+        
+        # 6. รีเซ็ตวัตถุไดนามิก
+        sim.resetDynamicObject(ball)
+        return ball
+
+
+    def create_ping_pong_in_fenced_area(self):
+        """สร้างลูกปิงปองหลายลูกในช่อง A3 - แก้ไขความสูง"""
+        grid_x, grid_y = 0, 2  # A3
+        
+        # ตำแหน่งกลางของช่อง A3
+        center_pos = self.grid_to_position(grid_x, grid_y)
+        
+        # จัดลูกปิงปองหลายลูกในช่องเดียว
+        ball_patterns = [
+            [0, 0],        # กลาง
+            [-0.15, 0],    # ซ้าย
+            [0.15, 0],     # ขวา  
+            [0, -0.15],    # ล่าง
+            [0, 0.15],     # บน
+            [-0.1, -0.1],  # ซ้ายล่าง
+            [0.1, 0.1],    # ขวาบน
+        ]
+        
+        created_balls = []
+        
+        for i, (offset_x, offset_y) in enumerate(ball_patterns):
+            # ✅ ปรับความสูงให้เห็นชัดเจน
+            ball_pos = [
+                center_pos[0] + offset_x,
+                center_pos[1] + offset_y,
+                0.05  # เพิ่มความสูงเป็น 5cm
+            ]
+            
+            name = f"PingPong_A3_{i+1}"
+            
+            # สร้างลูกปิงปองที่ตอบสนองแรงลม
+            ball = self.create_ping_pong_ball(ball_pos, name)
+            
+            if ball:
+                ball_info = {
+                    'type': 'wind_responsive_a3',
+                    'handle': ball,
+                    'name': name,
+                    'grid': 'A3',
+                    'position': ball_pos,
+                    'mass_g': 2.7,
+                    'diameter_mm': 40,
+                    'dynamic': True,
+                    'wind_responsive': True,
+                    'color': 'orange'  # เพิ่มข้อมูลสี
+                }
+                
+                self.field_objects.append(ball_info)
+                created_balls.append(ball_info)
+        
+        print(f"🏓 Created {len(created_balls)} wind-responsive ping pong balls in A3")
+        return created_balls
+
+    def check_ping_pong_visibility(self):
+        """ตรวจสอบและแก้ไขการมองเห็นลูกปิงปอง"""
+        print("🔍 ตรวจสอบลูกปิงปองทั้งหมด...")
+        
+        ping_pong_balls = []
+        for obj in self.field_objects:
+            if obj.get('type') == 'wind_responsive_a3':
+                ping_pong_balls.append(obj)
+        
+        if not ping_pong_balls:
+            print("❌ ไม่พบลูกปิงปอง")
+            return
+        
+        for ball_info in ping_pong_balls:
+            ball_handle = ball_info['handle']
+            
+            # ตรวจสอบตำแหน่งปัจจุบัน
+            current_pos = self.sim.getObjectPosition(ball_handle, -1)
+            
+            # ถ้าตำแหน่งต่ำเกินไป ให้ปรับขึ้น
+            if current_pos[2] < 0.02:
+                new_pos = [current_pos[0], current_pos[1], 0.05]
+                self.sim.setObjectPosition(ball_handle, -1, new_pos)
+                print(f"✅ ปรับตำแหน่งลูก {ball_info['name']} ขึ้นเป็น {new_pos[2]}m")
+            
+            # ตั้งค่าสีส้มใหม่
+            self.sim.setShapeColor(ball_handle, None, 
+                self.sim.colorcomponent_ambient_diffuse, [1.0, 0.5, 0.0])
+            
+            # ตรวจสอบว่าเป็น dynamic หรือไม่
+            is_static = self.sim.getObjectInt32Parameter(ball_handle, self.sim.shapeintparam_static)
+            is_respondable = self.sim.getObjectInt32Parameter(ball_handle, self.sim.shapeintparam_respondable)
+            
+            print(f"🏓 {ball_info['name']}: Static={is_static}, Respondable={is_respondable}, Pos={current_pos[2]:.3f}m")
+
+
+    def create_ping_pong_balls_in_grid(self, grid_x, grid_y, num_balls=7, name_prefix=None):
+        """สร้างลูกปิงปองหลายลูกในช่องที่กำหนด - ตอบสนองแรงลม"""
+        if name_prefix is None:
+            name_prefix = f"PingPong_{chr(65+grid_x)}{grid_y+1}"
+        
+        # ตำแหน่งกลางของช่อง
+        center_pos = self.grid_to_position(grid_x, grid_y)
+        
+        # รูปแบบการจัดลูกในช่อง (สูงสุด 7 ลูก)
+        ball_patterns = [
+            [0, 0],        # 1. กลาง
+            [-0.15, 0],    # 2. ซ้าย
+            [0.15, 0],     # 3. ขวา  
+            [0, -0.15],    # 4. ล่าง
+            [0, 0.15],     # 5. บน
+            [-0.1, -0.1],  # 6. ซ้ายล่าง
+            [0.1, 0.1],    # 7. ขวาบน
+        ]
+        
+        created_balls = []
+        
+        for i in range(min(num_balls, len(ball_patterns))):
+            offset_x, offset_y = ball_patterns[i]
+            
+            # คำนวณตำแหน่งในช่อง
+            ball_pos = [
+                center_pos[0] + offset_x,
+                center_pos[1] + offset_y,
+                0.025  # วางบนพื้น
+            ]
+            
+            name = f"{name_prefix}_{i+1}"
+            
+            # สร้างลูกปิงปองที่ตอบสนองแรงลม
+            ball = self.create_ping_pong_ball(ball_pos, name, ultra_sensitive=False)
+            
+            if ball:
+                ball_info = {
+                    'type': 'wind_responsive_ping_pong',
+                    'handle': ball,
+                    'name': name,
+                    'grid': f"{chr(65+grid_x)}{grid_y+1}",
+                    'position': ball_pos,
+                    'mass_g': 2.7,
+                    'diameter_mm': 40,
+                    'dynamic': True,
+                    'wind_responsive': True
+                }
+                
+                self.field_objects.append(ball_info)
+                created_balls.append(ball_info)
+        
+        grid_name = f"{chr(65+grid_x)}{grid_y+1}"
+        print(f"🏓 Created {len(created_balls)} wind-responsive ping pong balls in {grid_name}")
+        return created_balls
+    # ===============================================================
+    # SECTION 7: FENCE SYSTEMS
+    # ===============================================================
+    
+
+    def create_livestock_fence_from_diagram(self):
+        """สร้างรั้วสีเขียวตามแผนภาพ (รูปตัว L กลับด้าน)"""
+        # คำนวณตำแหน่งของแต่ละ grid
+        a3_pos = self.grid_to_position(0, 2)  # A3
         a4_pos = self.grid_to_position(0, 3)  # A4
+        b3_pos = self.grid_to_position(1, 2)  # B3
         b4_pos = self.grid_to_position(1, 3)  # B4
         b5_pos = self.grid_to_position(1, 4)  # B5
-        c4_pos = self.grid_to_position(2, 3)  # C4
-        c5_pos = self.grid_to_position(2, 4)  # C5
         
         half_tile = self.tile_size / 2
         
-        # สร้างรั้วรูปเลข 4 กลับด้าน
-        boundaries = [
-            # รั้วล่าง A4
-            ([a4_pos[0] - half_tile, a4_pos[1] - half_tile], 
-             [a4_pos[0] + half_tile, a4_pos[1] - half_tile], "A4_Bottom"),
+        # สร้างรั้วตามแผนภาพ
+        fence_segments = [
+            # รั้วล่าง A3-B3
+            ([a3_pos[0] - half_tile, a3_pos[1] - half_tile], 
+             [b3_pos[0] + half_tile, b3_pos[1] - half_tile], "A3_B3_Bottom"),
             
-            # รั้วซ้าย A4
-            ([a4_pos[0] - half_tile, a4_pos[1] - half_tile], 
-             [a4_pos[0] - half_tile, a4_pos[1] + half_tile], "A4_Left"),
+            # รั้วซ้าย A3-A4
+            ([a3_pos[0] - half_tile, a3_pos[1] - half_tile], 
+             [a4_pos[0] - half_tile, a4_pos[1] + half_tile], "A3_A4_Left"),
             
-            # รั้วบน A4 ไป B4
+            # รั้วบน A4
             ([a4_pos[0] - half_tile, a4_pos[1] + half_tile], 
-             [b4_pos[0] - half_tile, b4_pos[1] + half_tile], "A4_B4_Top"),
+             [b4_pos[0] - half_tile, b4_pos[1] + half_tile], "A4_Top"),
             
-            # รั้วซ้าย B4
-            ([b4_pos[0] - half_tile, b4_pos[1] - half_tile], 
-             [b4_pos[0] - half_tile, b4_pos[1] + half_tile], "B4_Left"),
+            # รั้วขวา B5-B4
+            ([b5_pos[0] + half_tile, b5_pos[1] + half_tile], 
+             [b4_pos[0] + half_tile, b4_pos[1] - half_tile], "B5_B4_Right"),
             
-            # รั้วล่าง B4 ไป C4
-            ([b4_pos[0] - half_tile, b4_pos[1] - half_tile], 
-             [c4_pos[0] + half_tile, c4_pos[1] - half_tile], "B4_C4_Bottom"),
-            
-            # รั้วขวา C4
-            ([c4_pos[0] + half_tile, c4_pos[1] - half_tile], 
-             [c4_pos[0] + half_tile, c4_pos[1] + half_tile], "C4_Right"),
-            
-            # รั้วบน C4 ถึงช่องคั่น
-            ([c4_pos[0] - half_tile, c4_pos[1] + half_tile], 
-             [c4_pos[0] + 0.2, c4_pos[1] + half_tile], "C4_Top_Part1"),
-            
-            # รั้วบน C5 หลังช่องคั่น
-            ([c5_pos[0] - 0.2, c5_pos[1] + half_tile], 
-             [c5_pos[0] + half_tile, c5_pos[1] + half_tile], "C5_Top"),
-            
-            # รั้วขวา C5
-            ([c5_pos[0] + half_tile, c5_pos[1] - half_tile], 
-             [c5_pos[0] + half_tile, c5_pos[1] + half_tile], "C5_Right"),
-            
-            # รั้วล่าง C5 ต่อ B5
-            ([c5_pos[0] - half_tile, c5_pos[1] - half_tile], 
-             [b5_pos[0] + half_tile, b5_pos[1] - half_tile], "C5_B5_Bottom"),
-            
-            # รั้วขวา B5
-            ([b5_pos[0] + half_tile, b5_pos[1] - half_tile], 
-             [b5_pos[0] + half_tile, b5_pos[1] + half_tile], "B5_Right"),
+            # รั้วซ้าย B5
+            ([b4_pos[0] - half_tile, b4_pos[1] + half_tile], 
+             [b4_pos[0] - half_tile, b5_pos[1] + half_tile], "B5_Left"),
             
             # รั้วบน B5
-            ([b5_pos[0] - half_tile, b5_pos[1] + half_tile], 
+            ([b4_pos[0] - half_tile, b5_pos[1] + half_tile], 
              [b5_pos[0] + half_tile, b5_pos[1] + half_tile], "B5_Top"),
             
-            # รั้วซ้าย C5
-            ([c5_pos[0] - half_tile, c5_pos[1] - half_tile], 
-             [c5_pos[0] - half_tile, c5_pos[1] + half_tile], "C5_Left"),
+            # รั้วล่าง B4-B3
+            ([b4_pos[0] + half_tile, b4_pos[1] - half_tile], 
+             [b3_pos[0] + half_tile, b3_pos[1] - half_tile], "B4_B3_Bottom"),
+            
+            ([a3_pos[0] + half_tile, a3_pos[1] - half_tile], 
+             [a4_pos[0] + half_tile, a4_pos[1] - half_tile], "A3_Right"),
+            
+            ([b3_pos[0] - half_tile, b3_pos[1] - half_tile], 
+             [b4_pos[0] - half_tile, b4_pos[1] - half_tile], "B3_Left"),
+            
+            # รั้วบน B3 (ไปหา A3)
+            ([a4_pos[0] + half_tile, a4_pos[1] - half_tile], 
+             [b4_pos[0] - half_tile, b4_pos[1] - half_tile], "B3_A3_Top"),
+            
+            # รั้วซ้าย A3 (ส่วนที่ปิด)
+            ([a3_pos[0] - half_tile, a3_pos[1] + half_tile], 
+             [a3_pos[0] - half_tile, a3_pos[1] - half_tile], "A3_Left"),
         ]
         
-        for start_pos, end_pos, name in boundaries:
+        # สร้างรั้วแต่ละส่วน
+        for start_pos, end_pos, name in fence_segments:
             self.create_boundary_wall(start_pos, end_pos, height=0.1, name=name)
+        
+        print("🟢 Created livestock fence (shaped boundary)")
 
+
+    def create_movable_ping_pong_area(self, anchor_grid_x, anchor_grid_y):
+        """สร้างสนามปิงปองโดยใช้ฟิกแล้วย้าย - ไม่รวมกลุ่ม"""
+        print(f"🏓 Creating movable ping pong area at {chr(65+anchor_grid_x)}{anchor_grid_y+1}")
+        
+        # บันทึก field_objects เดิม
+        old_count = len(self.field_objects)
+        
+        # สร้างสนามฟิกที่ A4 (0,3)
+        self.create_ping_pong_boundaries()
+        
+        # ดูรั้วที่เพิ่งสร้างใหม่
+        new_fences = self.field_objects[old_count:]
+        
+        # คำนวณการเลื่อน
+        original_pos = self.grid_to_position(0, 3)  # A4
+        new_pos = self.grid_to_position(anchor_grid_x, anchor_grid_y)
+        
+        offset_x = new_pos[0] - original_pos[0]
+        offset_y = new_pos[1] - original_pos[1]
+        
+        # ย้ายรั้วแต่ละชิ้น
+        for fence in new_fences:
+            if fence.get('type') == 'boundary_wall':
+                # ดึงตำแหน่งปัจจุบัน
+                current_pos = self.sim.getObjectPosition(fence['handle'], -1)
+                
+                # ย้ายตำแหน่งใหม่
+                new_fence_pos = [
+                    current_pos[0] + offset_x,
+                    current_pos[1] + offset_y,
+                    current_pos[2]
+                ]
+                
+                self.sim.setObjectPosition(fence['handle'], -1, new_fence_pos)
+        
+        print(f"✅ Moved {len(new_fences)} fence pieces to new position")
+        return new_fences
+
+
+    # ===============================================================
+    # SECTION 8: COMPLETE FIELD CREATION
+    # ===============================================================
+    
     def create_complete_field(self):
-        """สร้างสนามแข่งขันครบถ้วน"""
+        """สร้างสนามแข่งขันครบถ้วนตามแผนภาพ"""
         print("🏗️ Creating complete Drone Odyssey Challenge field...")
         
-        # 1. สร้างพื้นสนามแบ่งช่อง
+        # ล้างสนามก่อน
+        self.clear_field()
+        
+        # 1. สร้างพื้นสนาม
         self.create_tiled_floor()
         
-        # 2. สร้างขาตั้งรูปที่ขอบสนาม B1, D1, E2, E4
-        self.create_edge_image_stand(1, 0)  # B1 (ขอบล่าง)
-        self.create_edge_image_stand(3, 0)  # D1 (ขอบล่าง)
-        self.create_edge_image_stand(4, 1)  # E2 (ขอบขวา)
-        self.create_edge_image_stand(4, 3)  # E4 (ขอบขวา)
+        # 2. สร้างป้ายสีฟ้า (ความสูง 120 ซม. - fixed)
+        print("🔵 Creating blue signs (120cm height, facing center)...")
+        self.create_edge_image_stand(1, 0, 120)  # B1
+        self.create_edge_image_stand(3, 0, 120)  # D1
+        self.create_edge_image_stand(4, 1, 120)  # E2
+        self.create_edge_image_stand(4, 3, 120)  # E4
         
-        # 3. สร้างสิ่งกีดขวางที่ B2, C3, D4
+        # 3-6. ส่วนอื่นๆ เหมือนเดิม...
+        print("🩷 Creating brown boxes (60×60×80 cm)...")
         self.create_obstacle_box(1, 1)  # B2
         self.create_obstacle_box(2, 2)  # C3
         self.create_obstacle_box(3, 3)  # D4
+        self.create_obstacle_box(4, 4)  # E5
         
-        # 4. สร้างกล่องที่ติดป้าย QR Code ที่ D2
-        self.create_obstacle_box_with_qr(3, 1)  # D2
+        print("🟡 Creating yellow box (60×60×160 cm)...")
+        self.create_adjustable_obstacle(3, 1, height_multiplier=2, name="YellowBox_D2")  # D2
         
-        # 5. สร้างลูกปิงปองทั้งหมดที่ C5
-        self.create_ping_pong_balls_at_c5(5)  # 5 ลูกที่ C5
+        print("🟢 Creating green fence (ping pong boundary)...")
+        self.create_livestock_fence_from_diagram()
+     
+        # 6. สร้างลูกปิงปอง
+        print("🏓 Creating ping pong balls...")
+        self.create_ping_pong_in_fenced_area()
         
-        # 6. สร้างรั้วกั้นลูกปิงปอง
-        self.create_ping_pong_boundaries()
+        # ✅ เพิ่มการตรวจสอบและแก้ไข
+        self.check_ping_pong_visibility()
+        
+        print("✅ Complete field created successfully!")
+        self.list_field_objects()
         
         print("✅ Complete field created successfully!")
         self.list_field_objects()
 
-    def list_field_objects(self):
-        """แสดงรายการวัตถุในสนาม"""
-        if not self.field_objects:
-            print("📭 No field objects found")
-            return
+    def create_custom_field_with_heights(self, obstacle_config=None):
+        """สร้างสนาม custom ที่ปรับความสูงสิ่งกีดขวางได้
         
-        object_types = {}
-        for obj in self.field_objects:
-            obj_type = obj['type']
-            if obj_type not in object_types:
-                object_types[obj_type] = []
-            object_types[obj_type].append(obj)
+        Args:
+            obstacle_config: dict ของการตั้งค่าสิ่งกีดขวาง
+            เช่น {'B2': 120, 'C3': 200, 'D4': 80}
+        """
+        print("🏗️ Creating custom field with adjustable obstacles...")
         
-        print(f"\n🏟️ Field objects summary ({len(self.field_objects)} total):")
-        for obj_type, objects in object_types.items():
-            print(f"  📋 {obj_type.title().replace('_', ' ')}: {len(objects)} objects")
-            for obj in objects[:3]:
-                if 'grid' in obj:
-                    print(f"    - {obj.get('name', 'Unnamed')} at {obj['grid']}")
-                else:
-                    print(f"    - {obj.get('name', 'Unnamed')}")
-            if len(objects) > 3:
-                print(f"    - ... และอีก {len(objects)-3} รายการ")
-        print()
+        # ล้างสนามก่อน
+        self.clear_field()
+        
+        # 1. สร้างพื้นสนาม
+        self.create_tiled_floor()
+        
+        # 2. สร้างป้ายสีฟ้า (เหมือนเดิม)
+        print("🔵 Creating blue signs (facing center)...")
+        self.create_edge_image_stand(1, 0)  # B1
+        self.create_edge_image_stand(3, 0)  # D1
+        self.create_edge_image_stand(4, 1)  # E2
+        self.create_edge_image_stand(4, 3)  # E4
+        
+        # 3. สร้างสิ่งกีดขวางตามการตั้งค่า
+        if obstacle_config is None:
+            # ค่าเริ่มต้น
+            obstacle_config = {
+                'B2': 80,   # B2 สูง 80 cm
+                'C3': 120,  # C3 สูง 120 cm
+                'D4': 160,  # D4 สูง 160 cm
+                'E5': 240   # E5 สูง 240 cm (สูงสุด)
+            }
+        
+        print("📦 Creating custom obstacles with heights...")
+        for grid_name, height in obstacle_config.items():
+            grid_x = ord(grid_name[0]) - 65  # A=0, B=1, C=2, ...
+            grid_y = int(grid_name[1:]) - 1  # 1=0, 2=1, 3=2, ...
+            
+            self.create_custom_obstacle(grid_x, grid_y, height)
+        
+        # 4. สร้างรั้วและลูกปิงปอง (เหมือนเดิม)
+        print("🟢 Creating green fence...")
+        self.create_livestock_fence_from_diagram()
+        
+        print("🏓 Creating ping pong balls...")
+        self.create_ping_pong_in_fenced_area()
+        
+        print("✅ Custom field created successfully!")
+        self.list_field_objects()
 
-    def clear_field(self):
-        """ลบสนามทั้งหมด"""
-        try:
-            cleared_count = 0
-            for obj in self.field_objects:
+    def create_interactive_custom_field(self):
+        """สร้างสนาม custom แบบ interactive - ใช้เฉพาะ compound object"""
+        print("🎨 Interactive Custom Field Creator")
+        print("=" * 50)
+        
+        # ล้างสนามก่อน
+        self.clear_field()
+        
+        # 1. สร้างพื้นสนาม
+        self.create_tiled_floor()
+        
+        # 2. สร้างป้ายสีฟ้า
+        self.create_interactive_signs()
+        
+        # 3. สร้างสิ่งกีดขวาง
+        self.create_interactive_obstacles()
+        
+        # 4. สร้างสนามปิงปอง compound object
+        print("\n🏓 สร้างสนามปิงปอง (Compound Object)")
+        print("=" * 40)
+        
+        # แสดงตำแหน่งที่วางได้
+        print("📍 ตำแหน่งที่สามารถวางได้:")
+        print("   1  2  3  4  5")
+        for i in range(5):
+            line = f"{chr(65+i)}  "
+            for j in range(5):
+                # ตรวจสอบพื้นที่ 3×2 สำหรับรูปเลข 4 กลับด้าน
+                can_place = (i + 2 < 5 and j + 1 < 5)
+                line += "🟢 " if can_place else "❌ "
+            print(line)
+        
+        # ถามตำแหน่งที่ต้องการ
+        while True:
+            position = input("\nตำแหน่งมุมล่างซ้าย (A4) ของสนามปิงปอง: ").strip().upper()
+            
+            if len(position) != 2 or position[0] not in 'ABCDE' or position[1] not in '12345':
+                print("❌ รูปแบบไม่ถูกต้อง")
+                continue
+            
+            grid_x = ord(position[0]) - ord('A')
+            grid_y = int(position[1]) - 1
+            
+            if grid_x + 2 >= 5 or grid_y + 1 >= 5:
+                print("❌ ไม่สามารถวางได้ - เกินขอบสนาม")
+                continue
+            
+            # สร้างสนามปิงปอง compound object
+            result = self.create_movable_ping_pong_area(grid_x, grid_y)
+            if result:
+                print(f"✅ สร้างสนามปิงปองที่ {position} เสร็จสิ้น!")
+                break
+        
+        print("✅ Interactive custom field created successfully!")
+        self.list_field_objects()
+
+    def create_interactive_obstacles(self):
+        """สร้างสิ่งกีดขวางแบบ interactive"""
+        print("\n📦 OBSTACLE CREATION")
+        print("=" * 30)
+        
+        # ถามจำนวนสิ่งกีดขวาง
+        while True:
+            try:
+                num_obstacles = int(input("จำนวนสิ่งกีดขวางที่ต้องการ (1-10): "))
+                if 1 <= num_obstacles <= 10:
+                    break
+                else:
+                    print("❌ กรุณาใส่จำนวน 1-10")
+            except ValueError:
+                print("❌ กรุณาใส่ตัวเลข")
+        
+        # แสดงตารางตำแหน่งที่ใช้ได้
+        print("\n📍 ตำแหน่งที่สามารถวางได้:")
+        print("   1  2  3  4  5")
+        for i in range(5):
+            line = f"{chr(65+i)}  "
+            for j in range(5):
+                pos = f"{chr(65+i)}{j+1}"
+                # ตรวจสอบตำแหน่งที่ไม่ควรวาง
+                if pos in ['B1', 'D1', 'E2', 'E4']:  # ป้ายสีฟ้า
+                    line += "🔵 "
+                elif pos in ['A3', 'A4', 'A5', 'B3', 'B4', 'B5']:  # พื้นที่ปิงปอง
+                    line += "🏓 "
+                else:
+                    line += "⬜ "
+            print(line)
+        
+        print("\n🔵 = ป้ายสีฟ้า (ห้ามวาง)")
+        print("🏓 = พื้นที่ปิงปอง (ห้ามวาง)")
+        print("⬜ = วางได้")
+        
+        # วนลูปถามรายละเอียดแต่ละสิ่งกีดขวาง
+        created_obstacles = []
+        used_positions = set()
+        
+        for i in range(num_obstacles):
+            print(f"\n--- สิ่งกีดขวางที่ {i+1} ---")
+            
+            # ถามตำแหน่ง
+            while True:
+                position = input(f"ตำแหน่ง (เช่น A1, B2, C3): ").strip().upper()
+                
+                # ตรวจสอบรูปแบบ
+                if len(position) != 2 or position[0] not in 'ABCDE' or position[1] not in '12345':
+                    print("❌ รูปแบบไม่ถูกต้อง ใช้ A1-E5")
+                    continue
+                
+                # ตรวจสอบตำแหน่งที่ห้ามวาง
+                if position in ['B1', 'D1', 'E2', 'E4']:
+                    print("❌ ตำแหน่งนี้มีป้ายสีฟ้าแล้ว")
+                    continue
+                
+                if position in ['A3', 'A4', 'A5', 'B3', 'B4', 'B5']:
+                    print("❌ ตำแหน่งนี้เป็นพื้นที่ปิงปอง")
+                    continue
+                
+                # ตรวจสอบตำแหน่งซ้ำ
+                if position in used_positions:
+                    print("❌ ตำแหน่งนี้ถูกใช้แล้ว")
+                    continue
+                
+                used_positions.add(position)
+                break
+            
+            # ถามความสูง
+            while True:
                 try:
-                    self.sim.removeObject(obj['handle'])
-                    if 'qr_board' in obj and obj['qr_board']:
-                        self.sim.removeObject(obj['qr_board'])
-                    if 'image_board' in obj and obj['image_board']:
-                        self.sim.removeObject(obj['image_board'])
-                    cleared_count += 1
-                except:
-                    pass
+                    height = int(input(f"ความสูง (60-240 ซม.): "))
+                    if 60 <= height <= 240:
+                        break
+                    else:
+                        print("❌ ความสูงต้องอยู่ระหว่าง 60-240 ซม.")
+                except ValueError:
+                    print("❌ กรุณาใส่ตัวเลข")
             
-            self.field_objects.clear()
-            print(f"🗑️ Cleared {cleared_count} field objects")
+            # แปลงตำแหน่งเป็น grid
+            grid_x = ord(position[0]) - ord('A')
+            grid_y = int(position[1]) - 1
             
-        except Exception as e:
-            print(f"⚠️ Error clearing field: {e}")
+            # สร้างสิ่งกีดขวาง
+            obstacle = self.create_custom_obstacle(grid_x, grid_y, height)
+            if obstacle:
+                created_obstacles.append(obstacle)
+                print(f"✅ สร้างสิ่งกีดขวางที่ {position} สูง {height} ซม.")
+            else:
+                print(f"❌ ไม่สามารถสร้างสิ่งกีดขวางที่ {position} ได้")
+        
+        print(f"\n🎉 สร้างสิ่งกีดขวาง {len(created_obstacles)} ชิ้นเสร็จสิ้น!")
+        return created_obstacles
+
+    def create_interactive_signs(self):
+        """สร้างป้ายแบบ interactive"""
+        print("\n🖼️ SIGN CREATION")
+        print("=" * 30)
+        
+        # ตำแหน่งป้ายที่แนะนำ
+        recommended_positions = ['B1', 'D1', 'E2', 'E4']
+        
+        print("ตำแหน่งป้ายแนะนำ: B1, D1, E2, E4")
+        
+        while True:
+            try:
+                use_recommended = input("ใช้ตำแหน่งแนะนำ? (y/n): ").strip().lower()
+                if use_recommended in ['y', 'yes']:
+                    positions = recommended_positions
+                    break
+                elif use_recommended in ['n', 'no']:
+                    # ให้ผู้ใช้เลือกเอง
+                    positions = []
+                    while True:
+                        pos = input("ตำแหน่งป้าย (หรือ 'done' เพื่อจบ): ").strip().upper()
+                        if pos == 'DONE':
+                            break
+                        if len(pos) == 2 and pos[0] in 'ABCDE' and pos[1] in '12345':
+                            positions.append(pos)
+                        else:
+                            print("❌ รูปแบบไม่ถูกต้อง")
+                    break
+                else:
+                    print("❌ กรุณาตอบ y หรือ n")
+            except:
+                print("❌ กรุณาตอบ y หรือ n")
+        
+        # ถามความสูงป้าย
+        while True:
+            try:
+                height = int(input("ความสูงป้าย (80-200 ซม.): "))
+                if 80 <= height <= 200:
+                    break
+                else:
+                    print("❌ ความสูงต้องอยู่ระหว่าง 80-200 ซม.")
+            except ValueError:
+                print("❌ กรุณาใส่ตัวเลข")
+        
+        # สร้างป้าย
+        created_signs = []
+        for pos in positions:
+            grid_x = ord(pos[0]) - ord('A')
+            grid_y = int(pos[1]) - 1
+            
+            sign = self.create_edge_image_stand(grid_x, grid_y, height)
+            if sign:
+                created_signs.append(sign)
+                print(f"✅ สร้างป้ายที่ {pos} สูง {height} ซม.")
+        
+        return created_signs
+
+    def create_interactive_ping_pong_area(self):
+        """สร้างสนามปิงปองแบบ interactive - ใช้โค้ดฟิกที่แก้ไขแล้ว"""
+        print("\n🏓 PING PONG AREA CREATION")
+        print("=" * 35)
+        
+        # แสดงตำแหน่งที่วางได้
+        print("📍 ตำแหน่งที่สามารถวางได้:")
+        print("   1  2  3  4  5")
+        for i in range(5):
+            line = f"{chr(65+i)}  "
+            for j in range(5):
+                can_place = (i + 2 < 5 and j + 1 < 5)
+                line += "🟢 " if can_place else "❌ "
+            print(line)
+        
+        # ถามตำแหน่งที่ต้องการ
+        while True:
+            position = input("\nตำแหน่งมุมล่างซ้าย (A4) ของสนามปิงปอง: ").strip().upper()
+            
+            if len(position) != 2 or position[0] not in 'ABCDE' or position[1] not in '12345':
+                print("❌ รูปแบบไม่ถูกต้อง")
+                continue
+            
+            grid_x = ord(position[0]) - ord('A')
+            grid_y = int(position[1]) - 1
+            
+            if grid_x + 2 >= 5 or grid_y + 1 >= 5:
+                print("❌ ไม่สามารถวางได้ - เกินขอบสนาม")
+                continue
+            
+            # สร้างสนามปิงปอง compound object
+            result = self.create_ping_pong_compound_object(grid_x, grid_y)
+            if result:
+                print(f"✅ สร้างสนามปิงปองที่ {position} เสร็จสิ้น!")
+                return result
+            else:
+                print("❌ ไม่สามารถสร้างสนามปิงปองได้")
+
+    # ===============================================================
+    # SECTION 9: LEGACY FUNCTIONS (สำหรับความเข้ากันได้)
+    # ===============================================================
+    
+    def create_field_from_diagram(self):
+        """สร้างสนามตามแผนภาพที่แนบมา (เหมือน create_complete_field)"""
+        return self.create_complete_field()
+
+# ===============================================================
+# MAIN PROGRAM
+# ===============================================================
 
 def quick_create_mode():
     """โหมดสร้างเร็ว"""
     print("⚡ Quick Field Create Mode")
     print("Select field type:")
-    print("1. Complete field (fixed)")
-    print("2. Custom field base")
-    print("3. Exit")
+    print("1. Complete field (fixed heights)")
+    print("2. Interactive custom field (ask for details)")
+    print("3. Field base only")
+    print("4. Exit")
     
-    choice = input("\nEnter choice (1-3): ").strip()
+    choice = input("\nEnter choice (1-4): ").strip()
     
     creator = DroneOdysseyFieldCreator()
     
-    if choice in ["1", "2"]:
+    if choice in ["1", "2", "3"]:
         if creator.start_simulation():
             time.sleep(1)
             
             if choice == "1":
                 creator.create_complete_field()
             elif choice == "2":
+                creator.create_interactive_custom_field()  # ฟังก์ชันใหม่
+            elif choice == "3":
                 creator.create_tiled_floor()
             
             print("\n✅ Field created successfully!")
             print("💡 Use your drone controller to test missions")
             print("🛑 Field will remain until you stop the simulation")
             
-    elif choice == "3":
+    elif choice == "4":
         print("👋 Goodbye!")
     else:
         print("❌ Invalid choice")
 
 if __name__ == "__main__":
-    print("🏟️ Drone Odyssey Challenge Field Creator (Fixed)")
+    print("🏟️ Drone Odyssey Challenge Field Creator (Organized)")
     print("=" * 70)
     print("🔧 Fixed: AttributeError, Texture Error, Board orientation, Wind physics")
-    print("🏓 Layout: B1,D1,E2,E4=Edge Images | B2,C3,D4=Obstacles | D2=QR Box | C5=All PingPongs")
+    print("🏓 Layout: B1,D1,E2,E4=Blue Signs | B2,C3,D4,E5=Brown Boxes | D2=Yellow Box")
+    print("🟢 Ping Pong: A3,A4,A5,B3,B4,B5 in L-shaped fence")
     print("=" * 70)
     
     quick_create_mode()
