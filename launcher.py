@@ -9,19 +9,44 @@ from tkinter import messagebox
 import subprocess
 import sys
 import os
+import threading
 
 def launch_gui(gui_type):
     """เปิด GUI ตามประเภทที่เลือก"""
     try:
+        # สำหรับ exe ไฟล์ ให้ import และรันโดยตรง
         if gui_type == "basic":
-            subprocess.Popen([sys.executable, "field_creator_gui.py"])
+            # Try to import and run directly first
+            try:
+                import field_creator_gui_advanced
+                field_creator_gui_advanced.main()
+            except:
+                # Fallback to subprocess
+                subprocess.Popen([sys.executable, "field_creator_gui.py"])
         elif gui_type == "advanced":
-            subprocess.Popen([sys.executable, "field_creator_gui_advanced.py"])
+            try:
+                import field_creator_gui_advanced
+                # ปิดหน้าต่าง launcher ก่อน
+                root.withdraw()
+                field_creator_gui_advanced.main()
+            except Exception as e:
+                messagebox.showerror("Error", f"Failed to load advanced GUI: {e}")
+                # Fallback to subprocess
+                try:
+                    subprocess.Popen([sys.executable, "field_creator_gui_advanced.py"])
+                    root.destroy()
+                except:
+                    messagebox.showerror("Error", "Cannot start advanced GUI")
         elif gui_type == "console":
-            subprocess.Popen([sys.executable, "run_create_field.py"])
-        
-        # ปิดหน้าต่าง launcher
-        root.destroy()
+            try:
+                # สำหรับ console mode ให้เปิดใน terminal แยก
+                if os.name == 'nt':  # Windows
+                    subprocess.Popen(['cmd', '/c', 'start', 'cmd', '/k', sys.executable, 'run_create_field.py'])
+                else:
+                    subprocess.Popen([sys.executable, "run_create_field.py"])
+                root.destroy()
+            except:
+                messagebox.showerror("Error", "Cannot start console interface")
         
     except Exception as e:
         messagebox.showerror("Error", f"Failed to launch {gui_type} interface:\n{e}")

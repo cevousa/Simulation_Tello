@@ -1,3 +1,4 @@
+# -*- coding: utf-8 -*-
 """
 Ping Pong System Module
 จัดการระบบลูกปิงปองและรั้วกั้น
@@ -23,7 +24,7 @@ class PingPongSystem:
             if has_balls:
                 balls = self.create_pingpong_balls(grid_x, grid_y)
             
-            print(f"🏓 Created Ping Pong Zone at {grid_name} (balls only)")
+            print(f"[PINGPONG] Created Ping Pong Zone at {grid_name} (balls only)")
             
             return {
                 'poles': [],  # ไม่มีเสา
@@ -32,7 +33,7 @@ class PingPongSystem:
             }
             
         except Exception as e:
-            print(f"❌ Error creating ping pong zone: {e}")
+            print(f"[ERROR] Error creating ping pong zone: {e}")
             return None
     
     def create_pingpong_balls(self, grid_x, grid_y, count=8):
@@ -80,11 +81,11 @@ class PingPongSystem:
                 balls.append(ball_info)
             
             grid_name = self.config.grid_to_string(grid_x, grid_y)
-            print(f"🏓 Created {count} ping pong balls at {grid_name}")
+            print(f"[PINGPONG] Created {count} ping pong balls at {grid_name}")
             return balls
             
         except Exception as e:
-            print(f"❌ Error creating ping pong balls: {e}")
+            print(f"[ERROR] Error creating ping pong balls: {e}")
             return []
     
     def create_fence_boundary(self, fence_segments):
@@ -97,11 +98,11 @@ class PingPongSystem:
                 if fence_obj:
                     fence_objects.append(fence_obj)
             
-            print(f"🟢 Created {len(fence_objects)} fence segments")
+            print(f"[SUCCESS] Created {len(fence_objects)} fence segments")
             return fence_objects
             
         except Exception as e:
-            print(f"❌ Error creating fence boundary: {e}")
+            print(f"[ERROR] Error creating fence boundary: {e}")
             return []
     
     def _create_fence_segment(self, start_pos, end_pos, name, height=0.1):
@@ -147,7 +148,7 @@ class PingPongSystem:
             return fence_info
             
         except Exception as e:
-            print(f"❌ Failed to create fence segment {name}: {e}")
+            print(f"[ERROR] Failed to create fence segment {name}: {e}")
             return None
     
     def create_predefined_fence(self):
@@ -208,5 +209,5 @@ class PingPongSystem:
         ]
         
         fence_objects = self.create_fence_boundary(fence_segments)
-        print(f"🟢 Created livestock fence (shaped boundary) - Height: {fence_height*100:.0f}cm")
+        print(f"[SUCCESS] Created livestock fence (shaped boundary) - Height: {fence_height*100:.0f}cm")
         return fence_objects

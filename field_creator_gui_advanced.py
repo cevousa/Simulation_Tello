@@ -33,6 +33,14 @@ except ImportError as e:
     print(f"❌ Error importing field manager: {e}")
     sys.exit(1)
 
+try:
+    from drone_gui_connector import DroneGUIConnector, create_drone_control_tab
+except ImportError as e:
+    print(f"❌ Error importing drone connector: {e}")
+    print("⚠️ Drone control features will be disabled")
+    DroneGUIConnector = None
+    create_drone_control_tab = None
+
 class AdvancedFieldCreatorGUI:
     """GUI ขั้นสูงสำหรับสร้างและจัดการสนาม Drone Odyssey Challenge"""
     
@@ -50,6 +58,12 @@ class AdvancedFieldCreatorGUI:
         self.is_simulation_running = False
         self.field_grid = [['0' for _ in range(5)] for _ in range(5)]  # 5x5 grid
         self.selected_tool = 'B.80'  # เครื่องมือที่เลือก
+        
+        # ตัวแปรสำหรับโดรน
+        self.drone_connector = None
+        if DroneGUIConnector:
+            self.drone_connector = DroneGUIConnector()
+            self.drone_connector.set_log_callback(self.log_message)
         
         # สร้าง UI
         self.setup_ui()
@@ -110,19 +124,37 @@ class AdvancedFieldCreatorGUI:
         content_frame = tk.Frame(main_container, bg='#2c3e50')
         content_frame.pack(fill=tk.BOTH, expand=True, pady=5)
         
+        # สร้าง Notebook สำหรับ tabs
+        self.notebook = ttk.Notebook(content_frame)
+        self.notebook.pack(fill=tk.BOTH, expand=True)
+        
+        # Tab 1: Field Designer
+        field_tab = ttk.Frame(self.notebook)
+        self.notebook.add(field_tab, text="🏟️ Field Designer")
+        
+        # Tab 2: Drone Control (ถ้ามี DroneGUIConnector)
+        if self.drone_connector and create_drone_control_tab:
+            self.drone_tab = create_drone_control_tab(self.notebook, self.drone_connector)
+        
+        # Setup tabs
+        self.setup_field_designer_tab(field_tab)
+        
+        # Status bar
+        self.setup_status_bar()
+    
+    def setup_field_designer_tab(self, parent):
+        """ตั้งค่า Tab สำหรับ Field Designer"""
         # Left panel - Visual field designer
-        left_panel = tk.Frame(content_frame, bg='#34495e', relief=tk.RAISED, bd=2)
+        left_panel = tk.Frame(parent, bg='#34495e', relief=tk.RAISED, bd=2)
         left_panel.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=(0, 5))
         
         # Right panel - Controls and output
-        right_panel = tk.Frame(content_frame, bg='#34495e', relief=tk.RAISED, bd=2)
+        right_panel = tk.Frame(parent, bg='#34495e', relief=tk.RAISED, bd=2)
         right_panel.pack(side=tk.RIGHT, fill=tk.Y, padx=(5, 0))
         
         self.setup_visual_designer(left_panel)
         self.setup_control_panel(right_panel)
-        
-        # Status bar
-        self.setup_status_bar()
+    
     
     def setup_toolbar(self, parent):
         """ตั้งค่า toolbar ด้านบน"""
@@ -145,7 +177,7 @@ class AdvancedFieldCreatorGUI:
             ('🎨', 'B.P]', 'Box Right Image'),
             ('🖌️', 'B.P^', 'Box Top Image'),
             ('🎭', 'B.P_', 'Box Bottom Image'),
-            ('�', 'Q', 'QR Code Box 230cm'),
+            ('📱', 'Q', 'QR Code Box 230cm'),
             ('�🔴', 'M1', 'Mission Pad 1'),
             ('🟢', 'M2', 'Mission Pad 2'),
             ('🔵', 'M3', 'Mission Pad 3'),
@@ -305,6 +337,102 @@ M2-0-0-0-0"""
                  command=self.grid_to_string,
                  bg='#34495e', fg='white', font=('Arial', 9, 'bold'),
                  width=20).pack(pady=2, padx=5)
+        
+        # Drone Integration
+        drone_frame = tk.LabelFrame(parent, text="🚁 Drone Integration", 
+                                   bg='#34495e', fg='white', font=('Arial', 10, 'bold'))
+        drone_frame.pack(fill=tk.X, padx=10, pady=5)
+        
+        if self.drone_connector:
+            # Quick drone actions
+            drone_quick_frame = tk.Frame(drone_frame, bg='#34495e')
+            drone_quick_frame.pack(fill=tk.X, pady=5)
+            
+            tk.Button(drone_quick_frame, text="📡 Connect Sim Drone", 
+                     command=self.connect_simulation_drone,
+                     bg='#3498db', fg='white', font=('Arial', 9, 'bold'),
+                     width=20).pack(pady=2, padx=5)
+            
+            tk.Button(drone_quick_frame, text="🚁 Quick Takeoff", 
+                     command=self.quick_takeoff,
+                     bg='#27ae60', fg='white', font=('Arial', 9, 'bold'),
+                     width=20).pack(pady=2, padx=5)
+            
+            tk.Button(drone_quick_frame, text="📸 Take Picture", 
+                     command=self.quick_take_picture,
+                     bg='#9b59b6', fg='white', font=('Arial', 9, 'bold'),
+                     width=20).pack(pady=2, padx=5)
+            
+            tk.Button(drone_quick_frame, text="🛬 Quick Land", 
+                     command=self.quick_land,
+                     bg='#f39c12', fg='white', font=('Arial', 9, 'bold'),
+                     width=20).pack(pady=2, padx=5)
+            
+            # Auto Mission buttons
+            mission_buttons_frame = tk.Frame(drone_frame, bg='#34495e')
+            mission_buttons_frame.pack(fill=tk.X, pady=5)
+            
+            tk.Button(mission_buttons_frame, text="🔄 Basic Mission", 
+                     command=lambda: self.start_drone_auto_mission("basic"),
+                     bg='#1abc9c', fg='white', font=('Arial', 8, 'bold'),
+                     width=18).pack(pady=1, padx=5)
+            
+            tk.Button(mission_buttons_frame, text="🔍 Scan Area", 
+                     command=lambda: self.start_drone_auto_mission("scan_area"),
+                     bg='#16a085', fg='white', font=('Arial', 8, 'bold'),
+                     width=18).pack(pady=1, padx=5)
+            
+            tk.Button(mission_buttons_frame, text="🎯 Find Mission Pads", 
+                     command=lambda: self.start_drone_auto_mission("find_mission_pads"),
+                     bg='#e74c3c', fg='white', font=('Arial', 8, 'bold'),
+                     width=18).pack(pady=1, padx=5)
+            
+            tk.Button(mission_buttons_frame, text="🛑 Stop Mission", 
+                     command=self.stop_drone_auto_mission,
+                     bg='#c0392b', fg='white', font=('Arial', 8, 'bold'),
+                     width=18).pack(pady=1, padx=5)
+            
+            # Mission Pad Detection buttons
+            mission_pad_buttons_frame = tk.Frame(drone_frame, bg='#34495e')
+            mission_pad_buttons_frame.pack(fill=tk.X, pady=5)
+            
+            tk.Button(mission_pad_buttons_frame, text="🎯 Enable Mission Pads", 
+                     command=self.enable_mission_pads,
+                     bg='#c0392b', fg='white', font=('Arial', 8, 'bold'),
+                     width=18).pack(pady=1, padx=5)
+            
+            tk.Button(mission_pad_buttons_frame, text="🔍 Detect (Auto)", 
+                     command=self.detect_mission_pads,
+                     bg='#8e44ad', fg='white', font=('Arial', 8, 'bold'),
+                     width=18).pack(pady=1, padx=5)
+            
+            tk.Button(mission_pad_buttons_frame, text="🔬 Detect (Improved)", 
+                     command=self.detect_mission_pads_improved,
+                     bg='#9b59b6', fg='white', font=('Arial', 8, 'bold'),
+                     width=18).pack(pady=1, padx=5)
+            
+            tk.Button(mission_pad_buttons_frame, text="🔧 Detect (Basic)", 
+                     command=self.detect_mission_pads_basic,
+                     bg='#7f8c8d', fg='white', font=('Arial', 8, 'bold'),
+                     width=18).pack(pady=1, padx=5)
+            
+            # Status and disconnect
+            status_frame = tk.Frame(drone_frame, bg='#34495e')
+            status_frame.pack(fill=tk.X, pady=5)
+            
+            tk.Button(status_frame, text="📊 Drone Status", 
+                     command=self.get_drone_status,
+                     bg='#95a5a6', fg='white', font=('Arial', 8, 'bold'),
+                     width=18).pack(pady=1, padx=5)
+            
+            tk.Button(status_frame, text="❌ Disconnect Drone", 
+                     command=self.disconnect_drone,
+                     bg='#7f8c8d', fg='white', font=('Arial', 8, 'bold'),
+                     width=18).pack(pady=1, padx=5)
+            
+        else:
+            tk.Label(drone_frame, text="⚠️ Drone connector not available", 
+                    bg='#34495e', fg='#e74c3c', font=('Arial', 9)).pack(pady=10)
         
         # Output Log
         log_frame = tk.LabelFrame(parent, text="📝 Output Log", 
@@ -575,6 +703,311 @@ M2-0-0-0-0"""
         except Exception as e:
             self.log_message(f"❌ Error: {e}")
             self.update_status("❌ Error")
+    
+    # ==================== DRONE CONTROL METHODS ====================
+    
+    def connect_simulation_drone(self):
+        """เชื่อมต่อกับโดรนใน simulation"""
+        if not self.drone_connector:
+            self.log_message("❌ Drone connector not available")
+            return False
+        
+        try:
+            self.update_status("🔄 Connecting to simulation drone...")
+            success = self.drone_connector.connect_simulation()
+            
+            if success:
+                self.log_message("✅ Simulation drone connected successfully")
+                self.update_status("🚁 Drone Connected")
+                return True
+            else:
+                self.log_message("❌ Failed to connect to simulation drone")
+                self.update_status("❌ Connection Failed")
+                return False
+                
+        except Exception as e:
+            self.log_message(f"❌ Drone connection error: {e}")
+            self.update_status("❌ Connection Error")
+            return False
+    
+    def quick_takeoff(self):
+        """ขึ้นบินอย่างรวดเร็ว"""
+        if not self.drone_connector:
+            self.log_message("❌ Drone connector not available")
+            return False
+        
+        try:
+            self.update_status("🚁 Taking off...")
+            
+            def takeoff_thread():
+                try:
+                    # เชื่อมต่อถ้ายังไม่ได้เชื่อมต่อ
+                    if not self.drone_connector.is_connected:
+                        self.drone_connector.connect_simulation()
+                    
+                    # ขึ้นบิน
+                    success = self.drone_connector.takeoff()
+                    
+                    if success:
+                        self.log_message("✅ Drone takeoff successful")
+                        self.update_status("🚁 Drone Flying")
+                    else:
+                        self.log_message("❌ Drone takeoff failed")
+                        self.update_status("❌ Takeoff Failed")
+                        
+                except Exception as e:
+                    self.log_message(f"❌ Takeoff error: {e}")
+                    self.update_status("❌ Takeoff Error")
+            
+            threading.Thread(target=takeoff_thread, daemon=True).start()
+            return True
+            
+        except Exception as e:
+            self.log_message(f"❌ Quick takeoff error: {e}")
+            return False
+    
+    def quick_land(self):
+        """ลงจอดอย่างรวดเร็ว"""
+        if not self.drone_connector:
+            self.log_message("❌ Drone connector not available")
+            return False
+        
+        try:
+            self.update_status("🛬 Landing...")
+            
+            def land_thread():
+                try:
+                    success = self.drone_connector.land()
+                    
+                    if success:
+                        self.log_message("✅ Drone landing successful")
+                        self.update_status("🛬 Drone Landed")
+                    else:
+                        self.log_message("❌ Drone landing failed")
+                        self.update_status("❌ Landing Failed")
+                        
+                except Exception as e:
+                    self.log_message(f"❌ Landing error: {e}")
+                    self.update_status("❌ Landing Error")
+            
+            threading.Thread(target=land_thread, daemon=True).start()
+            return True
+            
+        except Exception as e:
+            self.log_message(f"❌ Quick land error: {e}")
+            return False
+    
+    def quick_take_picture(self):
+        """ถ่ายรูปอย่างรวดเร็ว"""
+        if not self.drone_connector:
+            self.log_message("❌ Drone connector not available")
+            return False
+        
+        try:
+            self.update_status("📸 Taking picture...")
+            
+            def picture_thread():
+                try:
+                    # เริ่มกล้องถ้ายังไม่ได้เริ่ม
+                    if not self.drone_connector.camera_active:
+                        self.drone_connector.start_camera()
+                    
+                    # ถ่ายรูป
+                    images = self.drone_connector.take_picture(1)
+                    
+                    if images:
+                        self.log_message(f"✅ Picture captured: {images[0]}")
+                        self.update_status("📸 Picture Captured")
+                        
+                        # แสกน QR Code อัตโนมัติ
+                        qr_results = self.drone_connector.scan_qr_code(images[0])
+                        if qr_results:
+                            for result in qr_results:
+                                self.log_message(f"🔍 QR Code detected: {result['data']}")
+                    else:
+                        self.log_message("❌ Failed to capture picture")
+                        self.update_status("❌ Picture Failed")
+                        
+                except Exception as e:
+                    self.log_message(f"❌ Picture capture error: {e}")
+                    self.update_status("❌ Picture Error")
+            
+            threading.Thread(target=picture_thread, daemon=True).start()
+            return True
+            
+        except Exception as e:
+            self.log_message(f"❌ Quick picture error: {e}")
+            return False
+    
+    def get_drone_status(self):
+        """รับสถานะโดรน"""
+        if not self.drone_connector:
+            return None
+        
+        try:
+            status = self.drone_connector.get_status()
+            self.log_message(f"📊 Drone Status: {status}")
+            return status
+        except Exception as e:
+            self.log_message(f"❌ Get drone status error: {e}")
+            return None
+    
+    def start_drone_auto_mission(self, mission_type="basic"):
+        """เริ่ม Auto Mission"""
+        if not self.drone_connector:
+            self.log_message("❌ Drone connector not available")
+            return False
+        
+        try:
+            self.update_status(f"🚀 Starting {mission_type} mission...")
+            
+            def mission_thread():
+                try:
+                    # เชื่อมต่อถ้ายังไม่ได้เชื่อมต่อ
+                    if not self.drone_connector.is_connected:
+                        self.drone_connector.connect_simulation()
+                    
+                    # เริ่ม mission
+                    success = self.drone_connector.start_auto_mission(mission_type)
+                    
+                    if success:
+                        self.log_message(f"✅ {mission_type} mission started")
+                        self.update_status(f"🚀 {mission_type} Mission Running")
+                    else:
+                        self.log_message(f"❌ Failed to start {mission_type} mission")
+                        self.update_status("❌ Mission Failed")
+                        
+                except Exception as e:
+                    self.log_message(f"❌ Auto mission error: {e}")
+                    self.update_status("❌ Mission Error")
+            
+            threading.Thread(target=mission_thread, daemon=True).start()
+            return True
+            
+        except Exception as e:
+            self.log_message(f"❌ Start auto mission error: {e}")
+            return False
+    
+    def stop_drone_auto_mission(self):
+        """หยุด Auto Mission"""
+        if not self.drone_connector:
+            self.log_message("❌ Drone connector not available")
+            return False
+        
+        try:
+            self.drone_connector.stop_auto_mission()
+            self.log_message("🛑 Auto mission stopped")
+            self.update_status("🛑 Mission Stopped")
+            return True
+        except Exception as e:
+            self.log_message(f"❌ Stop auto mission error: {e}")
+            return False
+    
+    def disconnect_drone(self):
+        """ตัดการเชื่อมต่อโดรน"""
+        if not self.drone_connector:
+            return False
+        
+        try:
+            self.update_status("🔄 Disconnecting drone...")
+            success = self.drone_connector.disconnect()
+            
+            if success:
+                self.log_message("✅ Drone disconnected")
+                self.update_status("📡 Drone Disconnected")
+            else:
+                self.log_message("❌ Drone disconnection failed")
+                self.update_status("❌ Disconnect Failed")
+            
+            return success
+        except Exception as e:
+            self.log_message(f"❌ Disconnect drone error: {e}")
+            return False
+    
+    # ==================== MISSION PAD DETECTION METHODS ====================
+    
+    def enable_mission_pads(self):
+        """เปิดใช้งาน Mission Pads"""
+        if not self.drone_connector:
+            self.log_message("❌ Drone connector not available")
+            return False
+        
+        try:
+            self.update_status("🎯 Enabling mission pads...")
+            
+            def enable_thread():
+                try:
+                    # เชื่อมต่อถ้ายังไม่ได้เชื่อมต่อ
+                    if not self.drone_connector.is_connected:
+                        self.drone_connector.connect_simulation()
+                    
+                    # เปิดใช้งาน Mission Pads
+                    success = self.drone_connector.enable_mission_pads()
+                    
+                    if success:
+                        available_detectors = self.drone_connector.get_available_mission_pad_detectors()
+                        self.log_message(f"✅ Mission pads enabled with detectors: {available_detectors}")
+                        self.update_status("🎯 Mission Pads Enabled")
+                    else:
+                        self.log_message("❌ Failed to enable mission pads")
+                        self.update_status("❌ Mission Pads Failed")
+                        
+                except Exception as e:
+                    self.log_message(f"❌ Enable mission pads error: {e}")
+                    self.update_status("❌ Mission Pads Error")
+            
+            threading.Thread(target=enable_thread, daemon=True).start()
+            return True
+            
+        except Exception as e:
+            self.log_message(f"❌ Enable mission pads error: {e}")
+            return False
+    
+    def detect_mission_pads(self, detector_type="auto"):
+        """ตรวจหา Mission Pads"""
+        if not self.drone_connector:
+            self.log_message("❌ Drone connector not available")
+            return []
+        
+        try:
+            self.update_status("🔍 Detecting mission pads...")
+            
+            def detect_thread():
+                try:
+                    # ตรวจหา Mission Pads
+                    detected_pads = self.drone_connector.detect_mission_pads(detector_type)
+                    
+                    if detected_pads:
+                        self.log_message(f"✅ Found {len(detected_pads)} mission pad(s)")
+                        for pad in detected_pads:
+                            self.log_message(f"  🎯 ID: {pad['id']}, Method: {pad.get('method', 'unknown')}")
+                        self.update_status(f"🎯 Found {len(detected_pads)} Mission Pad(s)")
+                    else:
+                        self.log_message("❌ No mission pads detected")
+                        self.update_status("❌ No Mission Pads Found")
+                        
+                except Exception as e:
+                    self.log_message(f"❌ Mission pad detection error: {e}")
+                    self.update_status("❌ Detection Error")
+            
+            threading.Thread(target=detect_thread, daemon=True).start()
+            return True
+            
+        except Exception as e:
+            self.log_message(f"❌ Detect mission pads error: {e}")
+            return False
+    
+    def detect_mission_pads_improved(self):
+        """ตรวจหา Mission Pads ด้วย Improved Detector"""
+        return self.detect_mission_pads("improved")
+    
+    def detect_mission_pads_basic(self):
+        """ตรวจหา Mission Pads ด้วย Basic Detector"""
+        return self.detect_mission_pads("basic")
+    
+    def detect_mission_pads_all(self):
+        """ตรวจหา Mission Pads ด้วยทุกวิธี"""
+        return self.detect_mission_pads("all")
     
     # เมธอดอื่นๆ (เหมือนกับ GUI ปกติ)
     def log_message(self, message):
@@ -877,12 +1310,34 @@ def main():
     root = tk.Tk()
     app = AdvancedFieldCreatorGUI(root)
     
+    # ฟังก์ชันสำหรับปิดโปรแกรม
+    def on_closing():
+        """จัดการเมื่อปิดโปรแกรม"""
+        try:
+            # ตัดการเชื่อมต่อโดรนก่อนปิด
+            if hasattr(app, 'drone_connector') and app.drone_connector:
+                app.disconnect_drone()
+            
+            # หยุด simulation ถ้ากำลังทำงานอยู่
+            if hasattr(app, 'field_manager') and app.field_manager:
+                app.field_manager.stop_simulation()
+            
+            print("👋 Goodbye!")
+            root.destroy()
+        except Exception as e:
+            print(f"❌ Error during cleanup: {e}")
+            root.destroy()
+    
+    # ตั้งค่า protocol สำหรับปิดหน้าต่าง
+    root.protocol("WM_DELETE_WINDOW", on_closing)
+    
     try:
         root.mainloop()
     except KeyboardInterrupt:
-        print("\n👋 Goodbye!")
+        on_closing()
     except Exception as e:
         print(f"❌ Application error: {e}")
+        on_closing()
 
 
 if __name__ == "__main__":

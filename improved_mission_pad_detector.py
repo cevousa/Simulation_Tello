@@ -23,7 +23,7 @@ class ImprovedMissionPadDetector:
         self.detection_enabled = False
         self.confidence_threshold = 0.3
         self.detection_methods = ['template_matching', 'feature_matching', 'contour_detection']
-        
+        self.enable_mission_pad_detection()
         # โหลด templates
         self._load_templates()
         
