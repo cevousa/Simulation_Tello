@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# -*- coding: utf-8 -*-
 """
 Drone Odyssey Challenge Field Creator - Advanced GUI Version
 โปรแกรม GUI แบบขั้นสูงพร้อม Visual Field Designer Tools
@@ -23,6 +24,8 @@ import threading
 import json
 from datetime import datetime
 import random
+import subprocess
+import tempfile
 
 # เพิ่ม path สำหรับ import modules
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
@@ -30,7 +33,7 @@ sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 try:
     from create_field import FieldManager
 except ImportError as e:
-    print(f"❌ Error importing field manager: {e}")
+    print(f"[ERROR] Error importing field manager: {e}")
     sys.exit(1)
 
 class AdvancedFieldCreatorGUI:
@@ -38,7 +41,7 @@ class AdvancedFieldCreatorGUI:
     
     def __init__(self, root):
         self.root = root
-        self.root.title("🏟️ Drone Odyssey Field Creator Pro")
+        self.root.title("Field Creator Pro - Drone Odyssey Challenge")
         self.root.geometry("1400x900")
         self.root.configure(bg='#2c3e50')
         
@@ -50,6 +53,8 @@ class AdvancedFieldCreatorGUI:
         self.is_simulation_running = False
         self.field_grid = [['0' for _ in range(5)] for _ in range(5)]  # 5x5 grid
         self.selected_tool = 'B.80'  # เครื่องมือที่เลือก
+        self.is_code_running = False
+        self.code_process = None
         
         # สร้าง UI
         self.setup_ui()
@@ -83,7 +88,7 @@ class AdvancedFieldCreatorGUI:
         
         title_label = tk.Label(
             header_frame, 
-            text="🏟️ Drone Odyssey Challenge Field Creator Pro", 
+            text="Field Creator Pro - Drone Odyssey Challenge", 
             font=('Arial', 18, 'bold'),
             fg='#ecf0f1',
             bg='#2c3e50'
@@ -110,19 +115,142 @@ class AdvancedFieldCreatorGUI:
         content_frame = tk.Frame(main_container, bg='#2c3e50')
         content_frame.pack(fill=tk.BOTH, expand=True, pady=5)
         
+        # สร้าง Notebook สำหรับ tabs
+        self.notebook = ttk.Notebook(content_frame)
+        self.notebook.pack(fill=tk.BOTH, expand=True)
+        
+        # Tab 1: Field Designer
+        field_tab = ttk.Frame(self.notebook)
+        self.notebook.add(field_tab, text="🏟️ Field Designer")
+        
+        # Tab 2: Python Code Runner
+        code_tab = ttk.Frame(self.notebook)
+        self.notebook.add(code_tab, text="🐍 Python Code")
+        
+        # Setup tabs
+        self.setup_field_designer_tab(field_tab)
+        self.setup_code_runner_tab(code_tab)
+        
+        # Status bar
+        self.setup_status_bar()
+    
+    def setup_field_designer_tab(self, parent):
+        """ตั้งค่า Tab สำหรับ Field Designer"""
         # Left panel - Visual field designer
-        left_panel = tk.Frame(content_frame, bg='#34495e', relief=tk.RAISED, bd=2)
+        left_panel = tk.Frame(parent, bg='#34495e', relief=tk.RAISED, bd=2)
         left_panel.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=(0, 5))
         
         # Right panel - Controls and output
-        right_panel = tk.Frame(content_frame, bg='#34495e', relief=tk.RAISED, bd=2)
+        right_panel = tk.Frame(parent, bg='#34495e', relief=tk.RAISED, bd=2)
         right_panel.pack(side=tk.RIGHT, fill=tk.Y, padx=(5, 0))
         
         self.setup_visual_designer(left_panel)
         self.setup_control_panel(right_panel)
+    
+    def setup_code_runner_tab(self, parent):
+        """ตั้งค่า Tab สำหรับ Python Code Runner"""
+        # Main container for code tab
+        code_main = tk.Frame(parent, bg='#2c3e50')
+        code_main.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
         
-        # Status bar
-        self.setup_status_bar()
+        # Top frame for editor
+        editor_frame = tk.LabelFrame(code_main, text="🐍 Python Code Editor", 
+                                   bg='#34495e', fg='white', font=('Arial', 10, 'bold'))
+        editor_frame.pack(fill=tk.BOTH, expand=True, pady=(0, 5))
+        
+        # Toolbar for code editor
+        code_toolbar = tk.Frame(editor_frame, bg='#34495e')
+        code_toolbar.pack(fill=tk.X, padx=5, pady=5)
+        
+        # File operations
+        tk.Button(code_toolbar, text="📄 New", command=self.new_code_file,
+                 bg='#3498db', fg='white', font=('Arial', 8, 'bold')).pack(side=tk.LEFT, padx=2)
+        
+        tk.Button(code_toolbar, text="📁 Open", command=self.open_code_file,
+                 bg='#3498db', fg='white', font=('Arial', 8, 'bold')).pack(side=tk.LEFT, padx=2)
+        
+        tk.Button(code_toolbar, text="💾 Save", command=self.save_code_file,
+                 bg='#3498db', fg='white', font=('Arial', 8, 'bold')).pack(side=tk.LEFT, padx=2)
+        
+        # Separator
+        tk.Frame(code_toolbar, width=2, bg='#7f8c8d').pack(side=tk.LEFT, fill=tk.Y, padx=5)
+        
+        # Run controls
+        self.run_code_btn = tk.Button(code_toolbar, text="▶️ Run Code", command=self.run_python_code,
+                                     bg='#27ae60', fg='white', font=('Arial', 8, 'bold'))
+        self.run_code_btn.pack(side=tk.LEFT, padx=2)
+        
+        self.stop_code_btn = tk.Button(code_toolbar, text="⏹️ Stop", command=self.stop_python_code,
+                                      bg='#e74c3c', fg='white', font=('Arial', 8, 'bold'), state=tk.DISABLED)
+        self.stop_code_btn.pack(side=tk.LEFT, padx=2)
+        
+        tk.Button(code_toolbar, text="🧹 Clear Output", command=self.clear_code_output,
+                 bg='#f39c12', fg='white', font=('Arial', 8, 'bold')).pack(side=tk.LEFT, padx=2)
+        
+        # Separator
+        tk.Frame(code_toolbar, width=2, bg='#7f8c8d').pack(side=tk.LEFT, fill=tk.Y, padx=5)
+        
+        # Tools
+        tk.Button(code_toolbar, text="✓ Check Syntax", command=self.check_python_syntax,
+                 bg='#9b59b6', fg='white', font=('Arial', 8, 'bold')).pack(side=tk.LEFT, padx=2)
+        
+        tk.Button(code_toolbar, text="📦 Install Package", command=self.install_python_package,
+                 bg='#8e44ad', fg='white', font=('Arial', 8, 'bold')).pack(side=tk.LEFT, padx=2)
+        
+        # Code editor container
+        editor_container = tk.Frame(editor_frame, bg='#34495e')
+        editor_container.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
+        
+        # Line numbers
+        self.line_numbers = tk.Text(editor_container, width=4, padx=3, takefocus=0,
+                                  border=0, state='disabled', wrap='none',
+                                  bg='#404040', fg='#ffffff', font=('Consolas', 10))
+        self.line_numbers.pack(side=tk.LEFT, fill=tk.Y)
+        
+        # Code editor
+        self.code_editor = scrolledtext.ScrolledText(
+            editor_container,
+            wrap='none',
+            bg='#1e1e1e',
+            fg='#ffffff',
+            insertbackground='#ffffff',
+            selectbackground='#404040',
+            font=('Consolas', 10),
+            undo=True,
+            maxundo=-1
+        )
+        self.code_editor.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        
+        # Bind events for line numbers and syntax highlighting
+        self.code_editor.bind('<KeyRelease>', self.on_code_changed)
+        self.code_editor.bind('<Button-1>', self.on_code_changed)
+        
+        # Bottom frame for output
+        output_frame = tk.LabelFrame(code_main, text="📋 Output Console", 
+                                   bg='#34495e', fg='white', font=('Arial', 10, 'bold'))
+        output_frame.pack(fill=tk.X, pady=(5, 0))
+        
+        # Output text area
+        self.code_output = scrolledtext.ScrolledText(
+            output_frame,
+            height=10,
+            bg='#1a1a1a',
+            fg='#00ff00',
+            font=('Consolas', 9),
+            state='disabled'
+        )
+        self.code_output.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
+        
+        # Configure text tags for different output types
+        self.code_output.tag_configure("error", foreground="#ff6b6b")
+        self.code_output.tag_configure("info", foreground="#4ecdc4")
+        self.code_output.tag_configure("warning", foreground="#ffe66d")
+        
+        # Add welcome code
+        self.add_welcome_code()
+        
+        # Current file tracking
+        self.current_code_file = None
     
     def setup_toolbar(self, parent):
         """ตั้งค่า toolbar ด้านบน"""
@@ -870,6 +998,307 @@ M2-0-0-0-0"""
             except Exception as e:
                 self.log_message(f"❌ Error loading design: {e}")
                 self.update_status("❌ Load Error")
+    
+    # ===========================================
+    # Python Code Runner Methods
+    # ===========================================
+    
+    def add_welcome_code(self):
+        """เพิ่มโค้ดต้อนรับ"""
+        welcome_code = '''# 🐍 Python Code Runner - Drone Odyssey Field Creator
+# Welcome to the integrated Python code runner!
+# 
+# Features:
+# - Run Python code with real-time output
+# - Syntax highlighting and checking
+# - File operations (New, Open, Save)
+# - Package installation
+# - Access to field manager through 'self.field_manager'
+# 
+# Example 1: Basic Python
+print("Hello from Drone Odyssey! 🚁")
+print("Python version:", __import__('sys').version)
+
+# Example 2: Working with field manager (if available)
+# Note: You can access the field manager through the parent GUI
+# import math
+# print(f"Pi = {math.pi}")
+# print(f"Square root of 16 = {math.sqrt(16)}")
+
+# Example 3: Loop example
+for i in range(5):
+    print(f"Count: {i}")
+
+# Happy coding! 🚀
+'''
+        self.code_editor.insert('1.0', welcome_code)
+        self.update_line_numbers()
+    
+    def new_code_file(self):
+        """สร้างไฟล์โค้ดใหม่"""
+        if self.confirm_unsaved_code_changes():
+            self.code_editor.delete('1.0', tk.END)
+            self.current_code_file = None
+            self.append_code_output("📄 New code file created\n", "info")
+            self.update_line_numbers()
+    
+    def open_code_file(self):
+        """เปิดไฟล์โค้ด"""
+        if self.confirm_unsaved_code_changes():
+            file_path = filedialog.askopenfilename(
+                title="Open Python File",
+                filetypes=[("Python files", "*.py"), ("All files", "*.*")]
+            )
+            if file_path:
+                try:
+                    with open(file_path, 'r', encoding='utf-8') as file:
+                        content = file.read()
+                    self.code_editor.delete('1.0', tk.END)
+                    self.code_editor.insert('1.0', content)
+                    self.current_code_file = file_path
+                    self.append_code_output(f"📁 Opened: {os.path.basename(file_path)}\n", "info")
+                    self.update_line_numbers()
+                except Exception as e:
+                    messagebox.showerror("Error", f"Failed to open file:\n{e}")
+    
+    def save_code_file(self):
+        """บันทึกไฟล์โค้ด"""
+        if self.current_code_file:
+            self.save_code_to_file(self.current_code_file)
+        else:
+            self.save_code_as_file()
+    
+    def save_code_as_file(self):
+        """บันทึกไฟล์โค้ดเป็น"""
+        file_path = filedialog.asksaveasfilename(
+            title="Save Python File",
+            defaultextension=".py",
+            filetypes=[("Python files", "*.py"), ("All files", "*.*")]
+        )
+        if file_path:
+            self.save_code_to_file(file_path)
+            self.current_code_file = file_path
+    
+    def save_code_to_file(self, file_path):
+        """บันทึกเนื้อหาโค้ดลงไฟล์"""
+        try:
+            content = self.code_editor.get('1.0', tk.END)[:-1]  # Remove last newline
+            with open(file_path, 'w', encoding='utf-8') as file:
+                file.write(content)
+            self.append_code_output(f"💾 Saved: {os.path.basename(file_path)}\n", "info")
+        except Exception as e:
+            messagebox.showerror("Error", f"Failed to save file:\n{e}")
+    
+    def confirm_unsaved_code_changes(self):
+        """ยืนยันการเปลี่ยนแปลงที่ยังไม่บันทึก"""
+        # Simplified version - you might want to track actual changes
+        return True
+    
+    def run_python_code(self):
+        """รันโค้ด Python"""
+        if self.is_code_running:
+            messagebox.showwarning("Warning", "Code is already running!")
+            return
+        
+        code = self.code_editor.get('1.0', tk.END).strip()
+        if not code:
+            messagebox.showwarning("Warning", "No code to run!")
+            return
+        
+        # Create temp file
+        try:
+            temp_file = tempfile.NamedTemporaryFile(mode='w', suffix='.py', delete=False)
+            
+            # Add field manager access to the code
+            enhanced_code = f'''
+# Auto-generated field manager access
+import sys
+import os
+sys.path.append(r"{os.path.dirname(os.path.abspath(__file__))}")
+
+try:
+    from create_field import FieldManager
+    # Create field manager instance if not exists
+    if 'field_manager' not in globals():
+        field_manager = FieldManager()
+        print("✅ Field manager available as 'field_manager'")
+except Exception as e:
+    print(f"⚠️ Field manager not available: {{e}}")
+    field_manager = None
+
+# User code starts here
+{code}
+'''
+            
+            temp_file.write(enhanced_code)
+            temp_file.close()
+            
+            # Run in thread
+            thread = threading.Thread(target=self._run_python_code_thread, args=(temp_file.name,))
+            thread.daemon = True
+            thread.start()
+            
+        except Exception as e:
+            messagebox.showerror("Error", f"Failed to create temp file:\n{e}")
+    
+    def _run_python_code_thread(self, file_path):
+        """รันโค้ดใน Thread แยก"""
+        self.is_code_running = True
+        self.run_code_btn.config(state=tk.DISABLED)
+        self.stop_code_btn.config(state=tk.NORMAL)
+        
+        try:
+            # Clear output
+            self.clear_code_output()
+            self.append_code_output("🚀 Running Python code...\n", "info")
+            self.append_code_output("=" * 50 + "\n", "info")
+            
+            # Run Python script
+            self.code_process = subprocess.Popen(
+                [sys.executable, file_path],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                creationflags=subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0
+            )
+            
+            # Read output in real-time
+            while True:
+                output = self.code_process.stdout.readline()
+                if output == '' and self.code_process.poll() is not None:
+                    break
+                if output:
+                    self.append_code_output(output, "normal")
+            
+            # Get any remaining output
+            stdout, stderr = self.code_process.communicate()
+            if stdout:
+                self.append_code_output(stdout, "normal")
+            if stderr:
+                self.append_code_output(stderr, "error")
+            
+            # Show completion
+            return_code = self.code_process.returncode
+            self.append_code_output(f"\n{'='*50}\n", "info")
+            if return_code == 0:
+                self.append_code_output("✅ Code execution completed successfully!\n", "info")
+            else:
+                self.append_code_output(f"❌ Code execution failed with return code: {return_code}\n", "error")
+            
+        except Exception as e:
+            self.append_code_output(f"❌ Execution error: {str(e)}\n", "error")
+        
+        finally:
+            self.is_code_running = False
+            self.run_code_btn.config(state=tk.NORMAL)
+            self.stop_code_btn.config(state=tk.DISABLED)
+            self.code_process = None
+            
+            # Clean up temp file
+            try:
+                os.unlink(file_path)
+            except:
+                pass
+    
+    def stop_python_code(self):
+        """หยุดการทำงานของโค้ด"""
+        if self.code_process:
+            self.code_process.terminate()
+            self.append_code_output("\n⚠️ Code execution stopped by user!\n", "warning")
+            self.is_code_running = False
+            self.run_code_btn.config(state=tk.NORMAL)
+            self.stop_code_btn.config(state=tk.DISABLED)
+    
+    def clear_code_output(self):
+        """ล้าง Output"""
+        self.code_output.config(state=tk.NORMAL)
+        self.code_output.delete('1.0', tk.END)
+        self.code_output.config(state=tk.DISABLED)
+    
+    def append_code_output(self, text, tag="normal"):
+        """เพิ่มข้อความใน Output"""
+        self.code_output.config(state=tk.NORMAL)
+        self.code_output.insert(tk.END, text, tag)
+        self.code_output.see(tk.END)
+        self.code_output.config(state=tk.DISABLED)
+        self.root.update_idletasks()
+    
+    def check_python_syntax(self):
+        """ตรวจสอบ Syntax"""
+        code = self.code_editor.get('1.0', tk.END)
+        try:
+            compile(code, '<string>', 'exec')
+            self.append_code_output("✅ Syntax is correct!\n", "info")
+        except SyntaxError as e:
+            self.append_code_output(f"❌ Syntax error at line {e.lineno}: {e.msg}\n", "error")
+    
+    def install_python_package(self):
+        """ติดตั้ง Python Package"""
+        package_dialog = tk.Toplevel(self.root)
+        package_dialog.title("Install Python Package")
+        package_dialog.geometry("400x150")
+        package_dialog.configure(bg='#2c3e50')
+        package_dialog.transient(self.root)
+        package_dialog.grab_set()
+        
+        tk.Label(package_dialog, text="Package name:", 
+                bg='#2c3e50', fg='white', font=('Arial', 10)).pack(pady=10)
+        
+        package_entry = tk.Entry(package_dialog, width=40, font=('Arial', 10))
+        package_entry.pack(pady=5)
+        package_entry.focus()
+        
+        def install():
+            package_name = package_entry.get().strip()
+            if package_name:
+                package_dialog.destroy()
+                self.append_code_output(f"📦 Installing package: {package_name}\n", "info")
+                
+                # Install in thread
+                thread = threading.Thread(target=self._install_package_thread, args=(package_name,))
+                thread.daemon = True
+                thread.start()
+        
+        tk.Button(package_dialog, text="Install", command=install,
+                 bg='#27ae60', fg='white', font=('Arial', 9, 'bold')).pack(pady=10)
+        
+        package_entry.bind('<Return>', lambda e: install())
+    
+    def _install_package_thread(self, package_name):
+        """ติดตั้ง Package ใน Thread แยก"""
+        try:
+            process = subprocess.Popen(
+                [sys.executable, '-m', 'pip', 'install', package_name],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True
+            )
+            
+            stdout, stderr = process.communicate()
+            
+            if process.returncode == 0:
+                self.append_code_output(f"✅ Successfully installed {package_name}\n", "info")
+                self.append_code_output(stdout, "normal")
+            else:
+                self.append_code_output(f"❌ Failed to install {package_name}\n", "error")
+                self.append_code_output(stderr, "error")
+                
+        except Exception as e:
+            self.append_code_output(f"❌ Installation error: {str(e)}\n", "error")
+    
+    def on_code_changed(self, event=None):
+        """เมื่อโค้ดมีการเปลี่ยนแปลง"""
+        self.update_line_numbers()
+    
+    def update_line_numbers(self):
+        """อัพเดท Line Numbers"""
+        line_count = int(self.code_editor.index('end-1c').split('.')[0])
+        line_numbers_string = "\n".join(str(i) for i in range(1, line_count + 1))
+        
+        self.line_numbers.config(state='normal')
+        self.line_numbers.delete('1.0', tk.END)
+        self.line_numbers.insert('1.0', line_numbers_string)
+        self.line_numbers.config(state='disabled')
 
 
 def main():
