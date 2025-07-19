@@ -63,7 +63,7 @@ class AdvancedFieldCreatorGUI:
         self.drone_connector = None
         if DroneGUIConnector:
             self.drone_connector = DroneGUIConnector()
-            self.drone_connector.set_log_callback(self.log_message)
+            # ไม่ต้องตั้ง callback เพราะเราเรียกโดยตรงแล้ว
         
         # สร้าง UI
         self.setup_ui()
@@ -1012,12 +1012,29 @@ M2-0-0-0-0"""
     # เมธอดอื่นๆ (เหมือนกับ GUI ปกติ)
     def log_message(self, message):
         """แสดงข้อความใน output log"""
-        timestamp = datetime.now().strftime("%H:%M:%S")
-        formatted_message = f"[{timestamp}] {message}\n"
+        # ป้องกัน recursive call
+        if hasattr(self, '_logging_in_progress') and self._logging_in_progress:
+            return
         
-        self.output_text.insert(tk.END, formatted_message)
-        self.output_text.see(tk.END)
-        self.root.update()
+        self._logging_in_progress = True
+        
+        try:
+            timestamp = datetime.now().strftime("%H:%M:%S")
+            formatted_message = f"[{timestamp}] {message}\n"
+            
+            # แสดงใน Field Designer tab
+            self.output_text.insert(tk.END, formatted_message)
+            self.output_text.see(tk.END)
+            self.root.update()
+            
+            # ส่งไปยัง Drone Control tab ด้วย (ถ้ามี drone_connector)
+            # แต่ไม่ใส่ timestamp ซ้ำเพราะ drone_connector จะใส่เอง
+            if hasattr(self, 'drone_connector') and self.drone_connector:
+                # เรียกใช้ log_message ของ drone_connector โดยตรง
+                self.drone_connector.log_message(message)
+        
+        finally:
+            self._logging_in_progress = False
     
     def update_status(self, status):
         """อัพเดทสถานะ"""

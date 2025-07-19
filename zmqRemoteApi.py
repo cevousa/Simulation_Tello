@@ -15,7 +15,6 @@ class RemoteAPIClient:
         """
         self.context = zmq.Context()
         self.verbose = verbose
-        
         # REQ socket สำหรับส่งคำสั่ง
         self.socket = self.context.socket(zmq.REQ)
         self.socket.connect(f'tcp://{host}:{port}')

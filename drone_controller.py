@@ -184,44 +184,68 @@ class DroneTello(Tello):
             enable_mission_pad (bool): If True, enables mission pad detection
             
         Usage:
-            drone = DroneTello()  # Basic connection
+            drone = DroneTello()  # Basic connection to default IP
             drone = DroneTello(show_cam=True)  # With camera display
             drone = DroneTello(show_cam=True, enable_mission_pad=True)  # Full features
         """
         super().__init__()
 
-        # connect to the Tello drone
-        print("Connecting to Tello drone...")
-        self.connect()
-        print(f"Battery: {self.get_battery()}%")
-        print(f"Temperature: {self.get_temperature()}°C")
-        
-        # camera display attribute
+        # Initialize state variables first
         self.show_camera = False
         self._camera_thread = None
         self._stream_active = False
-        
-        # landing status tracking
+        self._display_active = False
         self.is_land = True  # Drone starts on ground
-        
-        # show camera in realtime if requested
-        if show_cam:
-            print("📸 Starting camera display as requested...")
-            self._start_video_stream()
-            self.start_camera_display()
-        else:
-            print("📸 Camera display disabled - no automatic photo taking")
-        
-        time.sleep(2)  # Give some time for connection to stabilize
+        self.is_connected = False
 
-        # enable mission pads if requested
-        if enable_mission_pad:
-            print("Enabling mission pads...")
-            self.enable_mission_pads()
-        else:
-            print("Mission pads disabled")
-        
-        print("Drone Tello initialized successfully.")
+        # Try to connect to the Tello drone
+        try:
+            print(f"Connecting to Tello drone at {getattr(self, 'TELLO_IP', '192.168.10.1')}...")
+            self.connect()
+            print("✅ Connected to Tello drone successfully!")
+            
+            # Get basic drone info
+            try:
+                battery = self.get_battery()
+                print(f"Battery: {battery}%")
+            except Exception as e:
+                print(f"Warning: Could not get battery info: {e}")
+                
+            try:
+                temperature = self.get_temperature()
+                print(f"Temperature: {temperature}°C")
+            except Exception as e:
+                print(f"Warning: Could not get temperature info: {e}")
+                
+            self.is_connected = True
+            
+            # show camera in realtime if requested
+            if show_cam:
+                # start video stream
+                self._start_video_stream()
+                if self._stream_active:
+                    self.start_camera_display()
+            
+            time.sleep(2)  # Give some time for connection to stabilize
+
+            # enable mission pads if requested
+            if enable_mission_pad:
+                print("Enabling mission pads...")
+                try:
+                    self.enable_mission_pads()
+                    print("Mission pads enabled successfully")
+                except Exception as e:
+                    print(f"Warning: Could not enable mission pads: {e}")
+            
+            print("Drone Tello initialized successfully.")
+            
+        except KeyboardInterrupt:
+            print("\n❌ Connection cancelled by user")
+            self.is_connected = False
+        except Exception as e:
+            print(f"❌ Warning: Could not connect to Tello drone: {e}")
+            print("You can still use WiFi configuration methods without a connected drone.")
+            self.is_connected = False
 
     def __del__(self):
         """
@@ -235,20 +259,36 @@ class DroneTello(Tello):
             pass
     
     def _start_video_stream(self):
-        """เริ่ม video stream พร้อมการรอให้กล้องปรับตัว - ไม่ถ่ายรูปทดสอบ"""
+        """
+        Start video stream with error handling and retry mechanism.
+        
+        Usage: Internal method called automatically when needed
+        """
         try:
             print("Starting video stream...")
             self.streamon()
+            time.sleep(5)  # Wait longer for stream to initialize
             
-            # รอให้ stream เริ่มต้น
-            time.sleep(3)  # ลดเวลารอจาก 5 เป็น 3 วินาที
-            
-            # ตั้งค่า stream ให้พร้อมใช้งานโดยไม่ทดสอบเฟรม
-            self._stream_active = True
-            print("✅ Video stream initialized (without frame testing)")
-            
+            # Try multiple times to get frame
+            for _ in range(3):
+                try:
+                    test_frame = self.get_frame_read().frame
+
+                    test_frame = cv2.cvtColor(test_frame, cv2.COLOR_BGR2RGB)  # Convert to RGB
+                    
+                    if test_frame is not None:
+                        self._stream_active = True
+                        print("Video stream started successfully")
+                        return
+                except Exception as e:
+                    print(f"Frame test attempt failed: {e}")
+                    time.sleep(1)
+                    continue
+                    
+            print("Warning: Video stream started but no frames available")
+            self._stream_active = False
         except Exception as e:
-            print(f"ไม่สามารถเริ่ม video stream: {e}")
+            print(f"Failed to start video stream: {e}")
             self._stream_active = False
 
 
@@ -277,8 +317,8 @@ class DroneTello(Tello):
             drone.stop_camera_display()  # Closes camera window
         """
         self.show_camera = False
-        if self._camera_thread:
-            self._camera_thread.join()
+        if self._camera_thread and self._camera_thread.is_alive():
+            self._camera_thread.join(timeout=2)
         cv2.destroyAllWindows()
         
     def _camera_loop(self):
@@ -290,12 +330,12 @@ class DroneTello(Tello):
         while self.show_camera and self._stream_active:
             try:
                 frame = self.get_frame_read().frame
+
+                frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)  # Convert to RGB
                 
-                # Convert BGR to RGB
-                frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-                
-                if frame_rgb is not None:
-                    cv2.imshow("Tello Camera Feed", frame_rgb)
+                if frame is not None:
+                    # OpenCV expects BGR format, no need to convert
+                    cv2.imshow("Tello Camera Feed", frame)
                     if cv2.waitKey(1) & 0xFF == ord('q'):
                         self.stop_camera_display()
                         break
@@ -307,107 +347,49 @@ class DroneTello(Tello):
                 break
 
 
-    def capture(self, count=3, folder="pictures/", base_filename="tello_picture", delay=1.5):
+    def capture(self, filename="tello_picture.jpg"):
         """
-        ถ่ายรูปหลายรูปติดต่อกัน โดยข้ามเฟรมที่เป็นสีดำ
+        Capture current frame and save it to pictures/ folder in RGB format.
         
         Args:
-            count (int): จำนวนรูปที่ต้องการถ่าย
-            folder (str): โฟลเดอร์ที่จะบันทึกรูป
-            base_filename (str): ชื่อไฟล์พื้นฐาน
-            delay (float): ระยะเวลารอระหว่างการถ่ายแต่ละรูป (วินาที)
+            filename (str): Name of the image file to save
             
         Returns:
-            list: รายการไฟล์ที่บันทึกสำเร็จ
+            str: Full path of saved image file, or None if failed
+            
+        Usage:
+            drone.capture()  # Saves as "tello_picture.jpg"
+            drone.capture("my_photo.jpg")  # Saves with custom name
         """
         if not self._stream_active:
-            print("เริ่มต้น video stream...")
             self._start_video_stream()
             
         if not self._stream_active:
-            print("❌ ไม่สามารถเริ่ม video stream ได้")
-            return []
+            print("Cannot capture: Video stream not available")
+            return None
             
-        # สร้างโฟลเดอร์ถ้าไม่มี
-        if not os.path.exists(folder):
-            os.makedirs(folder)
-            
-        saved_files = []
-        attempt_count = 0
-        max_attempts = count * 3  # ให้โอกาสมากกว่าจำนวนรูปที่ต้องการ
-        
-        print(f"📸 เริ่มถ่ายรูป {count} รูป...")
-        
-        while len(saved_files) < count and attempt_count < max_attempts:
-            attempt_count += 1
-            
-            try:
-                print(f"🔄 ความพยายามที่ {attempt_count}: กำลังถ่ายรูป...")
-                
-                frame_read = self.get_frame_read()
-                if frame_read is None:
-                    print("⚠️ ไม่สามารถอ่าน frame ได้")
-                    time.sleep(delay)
-                    continue
-                    
-                frame = frame_read.frame
-                if frame is None or frame.size == 0:
-                    print("⚠️ Frame ว่างเปล่า")
-                    time.sleep(delay)
-                    continue
-                    
-                # ตรวจสอบว่าเป็นเฟรมสีดำหรือไม่
-                if self._is_black_frame(frame):
-                    print("⚠️ ตรวจพบเฟรมสีดำ - ข้ามไป")
-                    time.sleep(delay)
-                    continue
-                    
-                # แปลงสีและบันทึกรูป
-                frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-                filename = f"{base_filename}_{len(saved_files) + 1}.jpg"
-                full_path = folder + filename
-                
-                success = cv2.imwrite(full_path, frame_rgb)
-                
-                if success:
-                    saved_files.append(full_path)
-                    print(f"✅ บันทึกรูปที่ {len(saved_files)}: {full_path}")
-                    
-                    # รอก่อนถ่ายรูปถัดไป
-                    if len(saved_files) < count:
-                        time.sleep(delay)
-                else:
-                    print("❌ ไม่สามารถบันทึกไฟล์ได้")
-                    
-            except Exception as e:
-                print(f"❌ เกิดข้อผิดพลาด: {e}")
-                time.sleep(delay)
-                
-        print(f"📸 ถ่ายรูปเสร็จสิ้น: {len(saved_files)}/{count} รูป")
-        return saved_files
-
-    def _is_black_frame(self, frame, threshold=10):
-        """
-        ตรวจสอบว่าเฟรมเป็นสีดำหรือไม่
-        
-        Args:
-            frame: เฟรมที่ต้องการตรวจสอบ
-            threshold (int): ค่าเกณฑ์สำหรับการตรวจสอบ (0-255)
-            
-        Returns:
-            bool: True ถ้าเป็นเฟรมสีดำ
-        """
         try:
-            # คำนวณค่าเฉลี่ยของ pixel ทั้งหมด
-            mean_value = frame.mean()
-            
-            # ถ้าค่าเฉลี่ยต่ำกว่า threshold แสดงว่าเป็นเฟรมสีดำ
-            return mean_value < threshold
-            
-        except Exception as e:
-            print(f"ข้อผิดพลาดในการตรวจสอบเฟรม: {e}")
-            return False
+            frame = self.get_frame_read().frame
 
+            frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)  # Convert to RGB
+            
+            if frame is None:
+                print("No frame available for capture")
+                return None
+                
+            path = "pictures/"
+            if not os.path.exists(path):
+                os.makedirs(path)
+                
+            full_path = path + filename
+            # Save in original BGR format (OpenCV default)
+            cv2.imwrite(full_path, frame)
+            print(f"Picture saved as {full_path}")
+            return full_path
+        except Exception as e:
+            print(f"Capture error: {e}")
+            return None
+    
     def scan_qr(self, filename):
         """
         Scan QR code from saved image file and return decoded data.
@@ -431,16 +413,39 @@ class DroneTello(Tello):
             return None
             
         try:
-            frame = cv2.imread(full_path)
-            gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-            qcd = cv2.QRCodeDetector()
-            data, points, _ = qcd.detectAndDecode(gray)
+            from pyzbar.pyzbar import decode
+            image = cv2.imread(full_path)
+            if image is None:
+                print(f"Cannot read image: {full_path}")
+                return None
+                
+            gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+            qr_codes = decode(gray)
             
-            if points is not None and data:
+            if qr_codes:
+                # Return first QR code data
+                data = qr_codes[0].data.decode('utf-8')
                 print(f"QR Code detected in {filename}: {data}")
                 return data
             else:
                 print(f"No QR code detected in {filename}")
+                return None
+        except ImportError:
+            print("pyzbar not available, using OpenCV QR detector")
+            try:
+                image = cv2.imread(full_path)
+                gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+                qcd = cv2.QRCodeDetector()
+                data, points, _ = qcd.detectAndDecode(gray)
+                
+                if points is not None and data:
+                    print(f"QR Code detected in {filename}: {data}")
+                    return data
+                else:
+                    print(f"No QR code detected in {filename}")
+                    return None
+            except Exception as e:
+                print(f"QR scan error: {e}")
                 return None
         except Exception as e:
             print(f"QR scan error: {e}")
@@ -971,6 +976,8 @@ class NaturalDroneController:
             
             print("✅ Connected to CoppeliaSim")
             
+
+            self._init_camera_system()
             # ✅ เพิ่มส่วนนี้
             # รอให้ simulation เสถียร
             time.sleep(2)
@@ -1428,18 +1435,18 @@ class NaturalDroneController:
             self.is_moving = False
             return False
 
-    def takeoff(self, height=1.0):
-        """ขึ้นบิน"""
+    def takeoff(self, height=100):
+        """ขึ้นบิน (หน่วย: cm)"""
         if self.is_flying:
             print("⚠️ Drone is already flying")
             return True
         
-        print(f"🚁 Taking off to {height}m...")
+        print(f"🚁 Taking off to {height}cm...")
         
         if self.use_simulation and self.drone_handle is not None:
             self._update_current_position()
             target_pos = self.current_position.copy()
-            target_pos[2] = height
+            target_pos[2] = height / 100.0  # แปลง cm เป็น m สำหรับซิม
             
             success = self._move_to_position_naturally(target_pos, duration=3.0)
             
@@ -1505,28 +1512,28 @@ class NaturalDroneController:
         return True
 
     def move_forward(self, distance):
-        """เคลื่อนที่ไปข้างหน้าตามทิศทางปัจจุบัน"""
-        return self._move_relative([distance, 0, 0])
+        """เคลื่อนที่ไปข้างหน้าตามทิศทางปัจจุบัน (หน่วย: cm)"""
+        return self._move_relative([distance/100.0, 0, 0])
 
-    def move_backward(self, distance):
-        """เคลื่อนที่ไปข้างหลัง"""
-        return self._move_relative([-distance, 0, 0])
+    def move_back(self, distance):
+        """เคลื่อนที่ไปข้างหลัง (หน่วย: cm)"""
+        return self._move_relative([-distance/100.0, 0, 0])
 
     def move_left(self, distance):
-        """เคลื่อนที่ไปทางซ้าย"""
-        return self._move_relative([0, distance, 0])
+        """เคลื่อนที่ไปทางซ้าย (หน่วย: cm)"""
+        return self._move_relative([0, distance/100.0, 0])
 
     def move_right(self, distance):
-        """เคลื่อนที่ไปทางขวา"""
-        return self._move_relative([0, -distance, 0])
+        """เคลื่อนที่ไปทางขวา (หน่วย: cm)"""
+        return self._move_relative([0, -distance/100.0, 0])
 
     def move_up(self, distance):
-        """เคลื่อนที่ขึ้น"""
-        return self._move_relative([0, 0, distance])
+        """เคลื่อนที่ขึ้น (หน่วย: cm)"""
+        return self._move_relative([0, 0, distance/100.0])
 
     def move_down(self, distance):
-        """เคลื่อนที่ลง"""
-        return self._move_relative([0, 0, -distance])
+        """เคลื่อนที่ลง (หน่วย: cm)"""
+        return self._move_relative([0, 0, -distance/100.0])
 
     def _move_relative(self, relative_pos):
         """เคลื่อนที่แบบสัมพัทธ์ตามทิศทางที่โดรนหันหน้าไป"""
@@ -1676,7 +1683,7 @@ class NaturalDroneController:
             # ในซิม: จำลองแบตเตอรี่
             return 85
 
-    def take_picture(self, count=3, delay=1.5):
+    def capture(self, count=3, delay=1.5):
         """ถ่ายรูป"""
         if self.use_simulation:
             print("🚁 Using camera in simulator")
@@ -1732,7 +1739,7 @@ class NaturalDroneController:
             print("❌ No camera interface available")
             return None
 
-    def scan_qr_code(self, image_path=None):
+    def scan_qr(self, image_path=None):
         """แสกน QR Code จากไฟล์ภาพ - ต้องส่ง image_path หรือถ่ายรูปก่อน"""
         # เริ่มกล้องเฉพาะเมื่อจำเป็น
         if not self.camera and self.use_simulation:

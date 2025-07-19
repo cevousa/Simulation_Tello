@@ -18,8 +18,8 @@ def launch_gui(gui_type):
         if gui_type == "basic":
             # Try to import and run directly first
             try:
-                import field_creator_gui
-                field_creator_gui.main()
+                import field_creator_gui_advanced
+                field_creator_gui_advanced.main()
             except:
                 # Fallback to subprocess
                 subprocess.Popen([sys.executable, "field_creator_gui.py"])

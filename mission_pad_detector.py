@@ -111,7 +111,7 @@ class MissionPadDetector:
         
         return None
     
-    def detect_mission_pad(self, image_path):
+    def get_mission_pad_id(self, image_path=None):
         """
         ตรวจจับ Mission Pad จากรูปภาพ
         
@@ -125,7 +125,7 @@ class MissionPadDetector:
             print("❌ No templates loaded")
             return None
         
-        if not os.path.exists(image_path):
+        if not image_path or not os.path.exists(image_path):
             print(f"❌ Image not found: {image_path}")
             return None
         
@@ -238,7 +238,7 @@ class MissionPadDetector:
         """ทดสอบการตรวจจับและแสดงผลละเอียด"""
         print(f"🧪 Testing detection on: {image_path}")
         
-        result = self.detect_mission_pad(image_path)
+        result = self.get_mission_pad_id(image_path)
         
         if result:
             print(f"✅ Result: Mission Pad ID {result['id']}")

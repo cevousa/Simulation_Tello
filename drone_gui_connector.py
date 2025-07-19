@@ -10,22 +10,14 @@ import time
 import json
 import sys
 import os
-import queue
 from datetime import datetime
-
-# สำหรับการจัดการรูปภาพ
-try:
-    from PIL import Image, ImageTk
-    PIL_AVAILABLE = True
-except ImportError:
-    print("⚠️ PIL (Pillow) not available. Image display may not work properly.")
-    PIL_AVAILABLE = False
 
 # เพิ่ม path สำหรับ import modules
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
 try:
-    from drone_controller import NaturalDroneController, DroneTello, QRCodeScanner, DroneCamera
+    from drone_controller import NaturalDroneController, DroneTello, QRCodeScanner, DroneCamera, ProximitySensorManager
+    import drone_controller  # Import module ทั้งหมดเพื่อใช้ในการ dynamic calling
 except ImportError as e:
     print(f"❌ Error importing drone controller: {e}")
     sys.exit(1)
@@ -69,16 +61,15 @@ class DroneGUIConnector:
         # ตัวแปรสำหรับ mission pads
         self.detected_mission_pads = []
         self.mission_pad_enabled = False
+
         self.improved_mission_pad_detector = None
         self.basic_mission_pad_detector = None
         
+        # ตัวแปรสำหรับ proximity sensors
+        self.proximity_sensors_enabled = False
+        
         # Log callback function (initialize before using log_message)
         self.log_callback = None
-        
-        # Threading และการจัดการการรันโค้ด
-        self.stop_execution = False
-        self.code_thread = None
-        self.message_queue = queue.Queue()
         
         # เริ่มต้น Mission Pad Detectors
         self._initialize_mission_pad_detectors()
@@ -94,12 +85,71 @@ class DroneGUIConnector:
     
     def log_message(self, message):
         """ส่งข้อความไปยัง GUI log"""
-        timestamp = datetime.now().strftime("%H:%M:%S")
-        formatted_message = f"[{timestamp}] {message}"
-        print(formatted_message)  # แสดงใน console ด้วย
+        # ป้องกัน recursive call
+        if hasattr(self, '_logging_in_progress') and self._logging_in_progress:
+            return
         
-        if hasattr(self, 'log_callback') and self.log_callback:
-            self.log_callback(formatted_message)
+        self._logging_in_progress = True
+        
+        try:
+            timestamp = datetime.now().strftime("%H:%M:%S")
+            formatted_message = f"[{timestamp}] {message}"
+            print(formatted_message)  # แสดงใน console ด้วย
+            
+            # แสดงใน GUI log widget ถ้ามี
+            if hasattr(self, 'log_text_widget') and self.log_text_widget:
+                try:
+                    # Enable text widget for writing
+                    self.log_text_widget.config(state=tk.NORMAL)
+                    
+                    # Insert new message
+                    self.log_text_widget.insert(tk.END, formatted_message + "\n")
+                    
+                    # Color coding for different message types
+                    if "❌" in message or "error" in message.lower() or "failed" in message.lower():
+                        # Red for errors
+                        start_line = self.log_text_widget.index("end-2l linestart")
+                        end_line = self.log_text_widget.index("end-1l lineend")
+                        self.log_text_widget.tag_add("error", start_line, end_line)
+                        self.log_text_widget.tag_config("error", foreground="#ff4444")
+                    elif "✅" in message or "successful" in message.lower() or "complete" in message.lower():
+                        # Green for success
+                        start_line = self.log_text_widget.index("end-2l linestart")
+                        end_line = self.log_text_widget.index("end-1l lineend")
+                        self.log_text_widget.tag_add("success", start_line, end_line)
+                        self.log_text_widget.tag_config("success", foreground="#44ff44")
+                    elif "⚠️" in message or "warning" in message.lower():
+                        # Yellow for warnings
+                        start_line = self.log_text_widget.index("end-2l linestart")
+                        end_line = self.log_text_widget.index("end-1l lineend")
+                        self.log_text_widget.tag_add("warning", start_line, end_line)
+                        self.log_text_widget.tag_config("warning", foreground="#ffff44")
+                    elif "🔄" in message or "connecting" in message.lower() or "processing" in message.lower():
+                        # Blue for info/processing
+                        start_line = self.log_text_widget.index("end-2l linestart")
+                        end_line = self.log_text_widget.index("end-1l lineend")
+                        self.log_text_widget.tag_add("info", start_line, end_line)
+                        self.log_text_widget.tag_config("info", foreground="#44aaff")
+                    
+                    # Auto-scroll to bottom if enabled
+                    if hasattr(self, 'autoscroll_enabled') and self.autoscroll_enabled:
+                        self.log_text_widget.see(tk.END)
+                    
+                    # Limit log length to prevent memory issues (keep last 1000 lines)
+                    line_count = int(self.log_text_widget.index('end-1c').split('.')[0])
+                    if line_count > 1000:
+                        self.log_text_widget.delete(1.0, f"{line_count-1000}.0")
+                    
+                    # Disable text widget to make it read-only
+                    self.log_text_widget.config(state=tk.DISABLED)
+                    
+                except Exception as e:
+                    print(f"Error updating log widget: {e}")
+                    # Fallback to original behavior
+                    pass
+        
+        finally:
+            self._logging_in_progress = False
     
     # ==================== CONNECTION METHODS ====================
     
@@ -110,12 +160,18 @@ class DroneGUIConnector:
             
             if self.sim_drone is None:
                 self.sim_drone = NaturalDroneController(use_simulation=True)
-            
+                
+
             if self.sim_drone.use_simulation:
                 self.current_drone = self.sim_drone
                 self.drone_mode = "simulation"
                 self.is_connected = True
                 self.log_message("✅ Connected to simulation drone")
+                
+                # เปิด proximity sensors อัตโนมัติ
+                self.log_message("📡 Auto-enabling proximity sensors...")
+                self.enable_proximity_sensors()
+                
                 return True
             else:
                 self.log_message("❌ Failed to connect to simulation")
@@ -137,7 +193,11 @@ class DroneGUIConnector:
             self.drone_mode = "real"
             self.is_connected = True
             self.log_message("✅ Connected to real drone")
-            self.log_message(f"🔋 Battery: {self.real_drone.get_battery()}%")
+            try:
+                battery = self.real_drone.get_battery()
+                self.log_message(f"🔋 Battery: {battery}%")
+            except:
+                self.log_message("🔋 Battery: Unable to read")
             return True
             
         except Exception as e:
@@ -148,7 +208,7 @@ class DroneGUIConnector:
         """ตัดการเชื่อมต่อ"""
         try:
             self.log_message("🔄 Disconnecting drone...")
-            
+    
             # หยุด auto mission ถ้ากำลังทำงานอยู่
             if self.auto_mission_running:
                 self.stop_auto_mission()
@@ -190,6 +250,7 @@ class DroneGUIConnector:
         try:
             self.log_message("🚁 Taking off...")
             
+            # เรียกใช้ฟังก์ชันจาก drone_controller โดยตรง
             if self.drone_mode == "simulation":
                 success = self.current_drone.takeoff()
             else:  # real drone
@@ -218,6 +279,7 @@ class DroneGUIConnector:
         try:
             self.log_message("🛬 Landing...")
             
+            # เรียกใช้ฟังก์ชันจาก drone_controller โดยตรง
             if self.drone_mode == "simulation":
                 success = self.current_drone.land()
             else:  # real drone
@@ -243,29 +305,20 @@ class DroneGUIConnector:
             return False
         
         try:
-            self.log_message(f"🚁 Hovering for {duration} seconds...")
-            
-            if self.drone_mode == "simulation":
-                # สำหรับ simulation ใช้ hover ของโดรน simulation
-                success = self.current_drone.hover(duration)
-            else:  # real drone
-                # แบ่งการรอออกเป็นช่วงเล็กๆ เพื่อให้ responsive และตรวจสอบ stop_execution
-                start_time = time.time()
-                while time.time() - start_time < duration:
-                    if self.stop_execution:
-                        self.log_message("🛑 Hover interrupted by user")
-                        return False
-                    time.sleep(0.1)  # รอทีละ 0.1 วินาที
-                    remaining = duration - (time.time() - start_time)
-                    if remaining > 0 and (time.time() - start_time) % 1.0 < 0.1:  # อัปเดตทุกวินาที
-                        self.log_message(f"🚁 Hovering... {remaining:.1f}s remaining")
-                success = True
-            
-            if success:
+            if self.drone_mode == "real":
+                self.log_message(f"🚁 Hovering for {duration} seconds...")
+                time.sleep(duration)
                 self.log_message("✅ Hover complete")
-            
-            return success
-            
+                return True
+            else:
+                # สำหรับ simulation เรียก hover function โดยตรง
+                self.log_message(f"🚁 Hovering for {duration} seconds...")
+                success = self.current_drone.hover(duration)
+                if success:
+                    self.log_message("✅ Hover complete")
+                else:
+                    self.log_message("❌ Hover failed")
+                return success
         except Exception as e:
             self.log_message(f"❌ Hover error: {e}")
             return False
@@ -279,6 +332,10 @@ class DroneGUIConnector:
     def move_backward(self, distance=0.5):
         """เคลื่อนที่ไปข้างหลัง"""
         return self._execute_movement("backward", distance)
+    
+    def move_back(self, distance=0.5):
+        """เคลื่อนที่ไปข้างหลัง (ชื่อฟังก์ชันหลัก)"""
+        return self._execute_movement("back", distance)
     
     def move_left(self, distance=0.5):
         """เคลื่อนที่ไปทางซ้าย"""
@@ -306,10 +363,11 @@ class DroneGUIConnector:
             self.log_message(f"🚁 Moving {direction} {distance}m...")
             
             if self.drone_mode == "simulation":
+                # เรียกใช้ฟังก์ชันจาก simulation drone โดยตรง
                 if direction == "forward":
                     success = self.current_drone.move_forward(distance)
-                elif direction == "backward":
-                    success = self.current_drone.move_backward(distance)
+                elif direction == "backward" or direction == "back":
+                    success = self.current_drone.move_back(distance)
                 elif direction == "left":
                     success = self.current_drone.move_left(distance)
                 elif direction == "right":
@@ -321,10 +379,11 @@ class DroneGUIConnector:
                 else:
                     success = False
             else:  # real drone
+                # เรียกใช้ฟังก์ชันจาก real drone โดยตรง
                 distance_cm = int(distance * 100)
                 if direction == "forward":
                     self.current_drone.move_forward(distance_cm)
-                elif direction == "backward":
+                elif direction == "backward" or direction == "back":
                     self.current_drone.move_back(distance_cm)
                 elif direction == "left":
                     self.current_drone.move_left(distance_cm)
@@ -356,6 +415,15 @@ class DroneGUIConnector:
         """หมุนทวนเข็มนาฬิกา"""
         return self._execute_rotation("counterclockwise", angle)
     
+    # Alias functions สำหรับ backward compatibility
+    def counter_clockwise(self, angle=90):
+        """Alias สำหรับ rotate_counter_clockwise เพื่อ backward compatibility"""
+        return self.rotate_counter_clockwise(angle)
+    
+    def rotate_counterclockwise(self, angle=90):
+        """Alias สำหรับ rotate_counter_clockwise เพื่อ backward compatibility"""
+        return self.rotate_counter_clockwise(angle)
+    
     def _execute_rotation(self, direction, angle):
         """ดำเนินการหมุน"""
         if not self.is_flying:
@@ -366,19 +434,29 @@ class DroneGUIConnector:
             self.log_message(f"🔄 Rotating {direction} {angle}°...")
             
             if self.drone_mode == "simulation":
+                # แก้ไข: สลับการเรียกใช้เพื่อให้ทิศทางถูกต้อง
                 if direction == "clockwise":
+                    # ใช้ rotate_counter_clockwise เพื่อให้หมุนตามเข็มนาฬิกาจริง
+                    success = self.current_drone.rotate_counter_clockwise(angle)
+                elif direction == "counterclockwise":
+                    # ใช้ rotate_clockwise เพื่อให้หมุนทวนเข็มนาฬิกาจริง
                     success = self.current_drone.rotate_clockwise(angle)
                 else:
-                    success = self.current_drone.rotate_counterclockwise(angle)
+                    self.log_message(f"❌ Unknown rotation direction: {direction}")
+                    return False
             else:  # real drone
+                # สำหรับโดรนจริง ใช้ตามปกติ
                 if direction == "clockwise":
                     self.current_drone.rotate_clockwise(int(angle))
-                else:
+                elif direction == "counterclockwise":
                     self.current_drone.rotate_counter_clockwise(int(angle))
+                else:
+                    self.log_message(f"❌ Unknown rotation direction: {direction}")
+                    return False
                 success = True
             
             if success:
-                self.log_message(f"✅ Rotation {direction} complete")
+                self.log_message(f"✅ Rotation {direction} {angle}° complete")
             else:
                 self.log_message(f"❌ Rotation {direction} failed")
             
@@ -390,6 +468,14 @@ class DroneGUIConnector:
     
     # ==================== CAMERA METHODS ====================
     
+    def start_camera_display(self):
+        """เริ่มแสดงภาพกล้อง - ตรงกับ drone_controller.start_camera_display()"""
+        return self.start_camera()
+
+    def stop_camera_display(self):
+        """หยุดแสดงภาพกล้อง - ตรงกับ drone_controller.stop_camera_display()"""
+        return self.stop_camera()
+
     def start_camera(self):
         """เริ่มกล้อง"""
         if not self.is_connected:
@@ -433,8 +519,8 @@ class DroneGUIConnector:
             self.log_message(f"❌ Camera stop error: {e}")
             return False
     
-    def take_picture(self, count=1):
-        """ถ่ายรูป"""
+    def capture(self, count=1):
+        """ถ่ายรูป - ตรงกับ drone_controller.capture()"""
         if not self.is_connected:
             self.log_message("❌ Drone not connected")
             return []
@@ -451,14 +537,6 @@ class DroneGUIConnector:
                         if filename:
                             captured_files.append(filename)
                             self.log_message(f"✅ Captured: {filename}")
-                            
-                            # ส่งรูปภาพไปยัง terminal
-                            if hasattr(self, 'log_callback') and self.log_callback:
-                                self.log_callback({
-                                    'type': 'image',
-                                    'path': filename,
-                                    'description': f'Simulation capture {i+1}/{count}'
-                                })
                     else:
                         self.log_message("❌ Simulation camera not available")
                         break
@@ -467,15 +545,6 @@ class DroneGUIConnector:
                 if not os.path.exists(folder):
                     os.makedirs(folder)
                 captured_files = self.real_drone.capture(count=count, folder=folder)
-                
-                # ส่งรูปภาพไปยัง terminal สำหรับโดรนจริง
-                for i, filename in enumerate(captured_files):
-                    if hasattr(self, 'log_callback') and self.log_callback:
-                        self.log_callback({
-                            'type': 'image',
-                            'path': filename,
-                            'description': f'Real drone capture {i+1}/{count}'
-                        })
             
             self.last_captured_images = captured_files
             self.log_message(f"✅ Captured {len(captured_files)} images")
@@ -486,8 +555,8 @@ class DroneGUIConnector:
             self.log_message(f"❌ Picture taking error: {e}")
             return []
     
-    def scan_qr_code(self, image_path=None):
-        """แสกน QR Code"""
+    def scan_qr(self, image_path=None):
+        """แสกน QR Code - ตรงกับ drone_controller.scan_qr()"""
         try:
             if image_path is None:
                 if not self.last_captured_images:
@@ -498,22 +567,6 @@ class DroneGUIConnector:
             self.log_message(f"🔍 Scanning QR code in: {image_path}")
             
             results = self.qr_scanner.scan_qr_code(image_path)
-            
-            # ส่งรูปภาพไปยัง terminal พร้อมผลลัพธ์ QR Code
-            if hasattr(self, 'log_callback') and self.log_callback:
-                if results:
-                    qr_data = []
-                    for result in results:
-                        qr_data.append(result['data'])
-                    description = f"QR Code Scan - Found: {', '.join(qr_data)}"
-                else:
-                    description = "QR Code Scan - No QR codes detected"
-                
-                self.log_callback({
-                    'type': 'image',
-                    'path': image_path,
-                    'description': description
-                })
             
             if results:
                 self.last_qr_results = results
@@ -580,29 +633,60 @@ class DroneGUIConnector:
             self.log_message(f"❌ Mission pad enable error: {e}")
             return False
     
-    def detect_mission_pads(self, detector_type="auto"):
-        """ตรวจหา Mission Pads
+    def scan_mission_pad(self, detector_type="auto"):
+        """แสกน Mission Pad - ตรงกับ drone_controller.scan_mission_pad()
         
         Args:
             detector_type (str): "auto", "improved", "basic", หรือ "all"
         """
+        # เปิด Mission Pads อัตโนมัติถ้ายังไม่ได้เปิด
         if not self.mission_pad_enabled:
-            self.log_message("❌ Mission pads not enabled")
-            return []
+            self.log_message("🎯 Mission pads not enabled, enabling automatically...")
+            if not self.enable_mission_pads():
+                self.log_message("❌ Failed to enable mission pads")
+                return []
         
         try:
             self.log_message(f"🔍 Detecting mission pads using {detector_type} method...")
             
             detected_pads = []
             
-            # ถ่ายรูปก่อน
-            images = self.take_picture(1)
-            if not images:
-                self.log_message("❌ Failed to capture image for mission pad detection")
-                return []
+            # ถ่ายรูปด้วยกล้องล่างก่อน (สำหรับ Mission Pad detection)
+            self.log_message("📸 Taking bottom camera picture for mission pad detection...")
             
-            image_path = images[0]
-            self.log_message(f"📸 Using image: {image_path}")
+            # ลองใช้กล้องล่างก่อน (สำหรับ simulation)
+            bottom_image = None
+            if self.drone_mode == "simulation":
+                try:
+                    bottom_image = self.take_bottom_picture()
+                    if bottom_image:
+                        self.log_message(f"✅ Bottom camera image captured: {bottom_image}")
+                        image_path = bottom_image
+                    else:
+                        self.log_message("⚠️ Bottom camera failed, using front camera...")
+                        images = self.capture(1)
+                        if images:
+                            image_path = images[0]
+                        else:
+                            self.log_message("❌ Failed to capture any image")
+                            return []
+                except Exception as e:
+                    self.log_message(f"⚠️ Bottom camera error: {e}, using front camera...")
+                    images = self.capture(1)
+                    if images:
+                        image_path = images[0]
+                    else:
+                        self.log_message("❌ Failed to capture fallback image")
+                        return []
+            else:
+                # สำหรับโดรนจริง หรือถ้าไม่มีกล้องล่าง ใช้กล้องหน้า
+                images = self.capture(1)
+                if not images:
+                    self.log_message("❌ Failed to capture image for mission pad detection")
+                    return []
+                image_path = images[0]
+            
+            self.log_message(f"📸 Using image for detection: {image_path}")
             
             # ใช้ detector ตามที่เลือก
             if detector_type == "auto" or detector_type == "all":
@@ -652,23 +736,6 @@ class DroneGUIConnector:
             # ลบ duplicates และจัดเรียง
             unique_pads = self._remove_duplicate_pads(detected_pads)
             self.detected_mission_pads = unique_pads
-            
-            # ส่งรูปภาพที่ใช้ตรวจจับไปยัง terminal พร้อมผลลัพธ์
-            if hasattr(self, 'log_callback') and self.log_callback:
-                if unique_pads:
-                    # มี mission pads พบ
-                    pad_info = []
-                    for pad in unique_pads:
-                        pad_info.append(f"ID: {pad['id']} ({pad.get('method', 'unknown')})")
-                    description = f"Mission Pad Detection - Found: {', '.join(pad_info)}"
-                else:
-                    description = f"Mission Pad Detection - No pads detected using {detector_type} method"
-                
-                self.log_callback({
-                    'type': 'image',
-                    'path': image_path,
-                    'description': description
-                })
             
             if unique_pads:
                 for pad in unique_pads:
@@ -738,6 +805,254 @@ class DroneGUIConnector:
             unique_pads.append(best_pad)
         
         return unique_pads
+    
+    def get_mission_pad_id(self):
+        """ดึง Mission Pad ID - ตรงกับ drone_controller.get_mission_pad_id()
+        จะถ่ายรูปด้วยกล้องล่างก่อนแสกน Mission Pad
+        """
+        self.log_message("🎯 Getting Mission Pad ID...")
+        detected_pads = self.scan_mission_pad()
+        if detected_pads:
+            # คืนค่า ID ของแผ่นแรกที่พบ
+            pad_id = detected_pads[0].get('id', None)
+            self.log_message(f"✅ Mission Pad ID found: {pad_id}")
+            return pad_id
+        else:
+            self.log_message("❌ No Mission Pad detected")
+            return None
+    
+    def disable_mission_pads(self):
+        """ปิดใช้งาน Mission Pad detection - ตรงกับ drone_controller.disable_mission_pads()"""
+        self.mission_pad_enabled = False
+        self.log_message("🎯 Mission pads disabled")
+        return True
+    
+    # ==================== PROXIMITY SENSORS METHODS ====================
+    
+    def enable_proximity_sensors(self):
+        """เปิดใช้งาน Proximity Sensors - ตรงกับ drone_controller proximity functions"""
+        if not self.is_connected:
+            self.log_message("❌ Drone not connected")
+            return False
+        
+        try:
+            self.log_message("📡 Enabling proximity sensors...")
+            
+            if self.drone_mode == "simulation":
+                # ตรวจสอบว่ามี _init_proximity_sensors หรือไม่
+                if hasattr(self.current_drone, '_init_proximity_sensors'):
+                    self.log_message("🔍 Found _init_proximity_sensors method")
+                    success = self.current_drone._init_proximity_sensors()
+                    if success:
+                        self.proximity_sensors_enabled = True
+                        self.log_message("✅ Proximity sensors enabled successfully")
+                        return True
+                    else:
+                        self.log_message("❌ Failed to initialize proximity sensors")
+                        
+                # ตรวจสอบว่ามี proximity_manager อยู่แล้วหรือไม่
+                elif hasattr(self.current_drone, 'proximity_manager') and self.current_drone.proximity_manager:
+                    self.log_message("🔍 Found existing proximity_manager")
+                    self.proximity_sensors_enabled = True
+                    self.log_message("✅ Using existing proximity sensors")
+                    return True
+                
+                # สร้าง proximity_manager ใหม่
+                else:
+                    self.log_message("🔧 Creating new proximity manager...")
+                    try:
+                        if hasattr(self.current_drone, 'sim') and hasattr(self.current_drone, 'drone_handle'):
+                            self.log_message(f"🔍 Using sim: {type(self.current_drone.sim)} and drone_handle: {self.current_drone.drone_handle}")
+                            
+                            # สร้าง ProximitySensorManager ใหม่
+                            self.current_drone.proximity_manager = ProximitySensorManager(
+                                self.current_drone.sim, 
+                                self.current_drone.drone_handle
+                            )
+                            
+                            # เริ่มต้น sensors
+                            success = self.current_drone.proximity_manager.setup()
+                            if success:
+                                self.proximity_sensors_enabled = True
+                                self.log_message("✅ Proximity manager created and initialized successfully")
+                                return True
+                            else:
+                                self.log_message("❌ Failed to initialize proximity sensors in new manager")
+                        else:
+                            self.log_message("❌ Missing sim or drone_handle for proximity manager")
+                            self.log_message(f"   sim exists: {hasattr(self.current_drone, 'sim')}")
+                            self.log_message(f"   drone_handle exists: {hasattr(self.current_drone, 'drone_handle')}")
+                            
+                    except Exception as create_error:
+                        self.log_message(f"❌ Error creating proximity manager: {create_error}")
+                        import traceback
+                        self.log_message(f"   Traceback: {traceback.format_exc()}")
+                
+                # ถ้าไม่มี proximity sensors ก็ยังใช้งานได้ด้วยวิธีอื่น
+                self.log_message("⚠️ No proximity sensors found, using fallback methods")
+                self.proximity_sensors_enabled = False
+                return False
+                
+            elif self.drone_mode == "real":
+                # สำหรับโดรนจริง proximity sensors อาจไม่มี
+                self.log_message("⚠️ Proximity sensors not available on real drone")
+                self.proximity_sensors_enabled = False
+                return False
+            else:
+                self.log_message("⚠️ Unknown drone mode")
+                return False
+                
+        except Exception as e:
+            self.log_message(f"❌ Proximity sensors enable error: {e}")
+            return False
+    
+    def read_distance(self):
+        """อ่านระยะห่างจาก proximity sensor - ตรงกับ drone_controller.read_distance()"""
+        
+        if not self.is_connected:
+            self.log_message("❌ Drone not connected")
+            return None
+        
+        try:
+            if hasattr(self.current_drone, 'proximity_manager') and self.current_drone.proximity_manager:
+                distance = self.current_drone.proximity_manager.read_distance()
+                if distance is not None:
+                    self.log_message(f"📏 Distance: {distance:.3f}m")
+                    return distance
+                else:
+                    self.log_message("❌ No object detected by proximity sensor")
+                    return None
+            else:
+                self.log_message("❌ Proximity sensors not available")
+                return None
+                
+        except Exception as e:
+            self.log_message(f"❌ Distance read error: {e}")
+            return None
+    
+    def get_distance_tof(self):
+        """วัดความสูงจากพื้น - ตรงกับ drone_controller.get_height()
+        
+        Returns:
+            float: ความสูง (เมตร) หรือ None
+        """
+        if not self.is_connected:
+            self.log_message("❌ Drone not connected")
+            return None
+        
+        try:
+            # ตรวจสอบและเปิดใช้งาน proximity sensors อัตโนมัติถ้ายังไม่ได้เปิด (แต่ไม่ loop)
+            if not hasattr(self, 'proximity_sensors_enabled') or not self.proximity_sensors_enabled:
+                if not hasattr(self, '_trying_to_enable_sensors'):
+                    self._trying_to_enable_sensors = True
+                    self.log_message("🔧 Auto-enabling proximity sensors...")
+                    self.enable_proximity_sensors()
+                    delattr(self, '_trying_to_enable_sensors')
+            
+            # ใช้งานเหมือน drone_controller.py - เรียก read_distance() ผ่าน proximity_manager
+            if hasattr(self.current_drone, 'proximity_manager') and self.current_drone.proximity_manager:
+                distance = self.current_drone.proximity_manager.read_distance()
+                if distance is not None:
+                    self.log_message(f"📏 ความสูง: {distance:.2f} เมตร")
+                    return distance
+                else:
+                    self.log_message("❌ วัดความสูงไม่ได้")
+                    return None
+            
+            # Fallback: ใช้ simulation API โดยตรง
+            if self.drone_mode == "simulation" and hasattr(self.current_drone, 'sim') and hasattr(self.current_drone, 'drone_handle'):
+                try:
+                    position = self.current_drone.sim.getObjectPosition(self.current_drone.drone_handle, -1)
+                    if position and len(position) >= 3:
+                        height = abs(position[2])
+                        self.log_message(f"📏 ความสูง (simulation): {height:.2f} เมตร")
+                        return height
+                except Exception as sim_error:
+                    self.log_message(f"⚠️ Simulation height read error: {sim_error}")
+            
+            self.log_message("❌ ไม่สามารถวัดความสูงได้")
+            return None
+                
+        except Exception as e:
+            self.log_message(f"❌ Height measurement error: {e}")
+            return None
+            if self.drone_mode == "simulation" and hasattr(self.current_drone, 'sim') and hasattr(self.current_drone, 'drone_handle'):
+                try:
+                    position = self.current_drone.sim.getObjectPosition(self.current_drone.drone_handle, -1)
+                    if position and len(position) >= 3:
+                        height = abs(position[2])
+                        self.log_message(f"📏 Height from simulation: {height:.3f}m")
+                        return height
+                except Exception as sim_error:
+                    self.log_message(f"⚠️ Simulation height read error: {sim_error}")
+            
+            # 5. ถ้าไม่มีวิธีไหนได้ผล ใช้ค่าประมาณจาก current_position
+            if self.current_position and len(self.current_position) >= 3:
+                height = abs(self.current_position[2])
+                if height > 0:
+                    self.log_message(f"📏 Height from cached position: {height:.3f}m")
+                    return height
+            
+            # 6. ถ้าโดรนบินอยู่ ให้ค่าประมาณ
+            if self.is_flying:
+                estimated_height = 1.0  # ค่าประมาณ 1 เมตร
+                self.log_message(f"📏 Estimated height (drone flying): {estimated_height:.3f}m")
+                return estimated_height
+            
+            self.log_message("❌ Height measurement not available - no method worked")
+            return None
+                
+        except Exception as e:
+            self.log_message(f"❌ Height read error: {e}")
+            return None
+    
+    def get_altitude(self):
+        """วัดความสูงจากพื้น - alias สำหรับ get_height()"""
+        return self.get_height()
+    
+    def is_safe_altitude(self, min_height=0.3):
+        """ตรวจสอบว่าอยู่ในระดับความสูงที่ปลอดภัย - ตรงกับ drone_controller.is_safe_altitude()"""
+        try:
+            if hasattr(self.current_drone, 'is_safe_altitude'):
+                safe = self.current_drone.is_safe_altitude(min_height)
+                self.log_message(f"🛡️ Safe altitude check (min={min_height}m): {'✅ Safe' if safe else '⚠️ Too low'}")
+                return safe
+            else:
+                # Fallback - ใช้ get_height แทน
+                height = self.get_height()
+                if height is not None:
+                    safe = height >= min_height
+                    self.log_message(f"🛡️ Safe altitude check (min={min_height}m): {'✅ Safe' if safe else '⚠️ Too low'}")
+                    return safe
+                else:
+                    self.log_message("❌ Cannot check altitude safety")
+                    return False
+        except Exception as e:
+            self.log_message(f"❌ Safe altitude check error: {e}")
+            return False
+    
+    def read_proximity_sensor(self, sensor_name='bottom'):
+        """อ่านข้อมูลจาก proximity sensor - ตรงกับ drone_controller.read_proximity_sensor()"""
+        if hasattr(self.current_drone, 'read_proximity_sensor'):
+            try:
+                result = self.current_drone.read_proximity_sensor(sensor_name)
+                if result:
+                    self.log_message(f"📡 Proximity sensor {sensor_name}: {result}")
+                else:
+                    self.log_message(f"❌ No reading from proximity sensor {sensor_name}")
+                return result
+            except Exception as e:
+                self.log_message(f"❌ Proximity sensor read error: {e}")
+                return None
+        else:
+            # Fallback ใช้ read_distance
+            return self.read_distance()
+    
+    def disable_proximity_sensors(self):
+        """ปิดใช้งาน Proximity Sensors"""
+        self.proximity_sensors_enabled = False
+        self.log_message("📡 Proximity sensors disabled")
+        return True
     
     def _initialize_mission_pad_detectors(self):
         """เริ่มต้น Mission Pad Detectors"""
@@ -829,10 +1144,8 @@ class DroneGUIConnector:
         
         # 1. ขึ้นบิน
         if not self.is_flying:
-            if self.stop_execution:
-                return
             self.takeoff()
-            self._interruptible_sleep(2)
+            time.sleep(2)
         
         # 2. เคลื่อนที่ไปรอบๆ
         movements = [
@@ -843,86 +1156,52 @@ class DroneGUIConnector:
         ]
         
         for direction, distance in movements:
-            if not self.auto_mission_running or self.stop_execution:
+            if not self.auto_mission_running:
                 break
             
             self._execute_movement(direction, distance)
-            self._interruptible_sleep(1)
+            time.sleep(1)
         
         # 3. ลงจอด
-        if not self.stop_execution:
-            self.land()
-    
-    def _interruptible_sleep(self, duration):
-        """Sleep function ที่สามารถหยุดได้"""
-        start_time = time.time()
-        while time.time() - start_time < duration and not self.stop_execution:
-            time.sleep(0.1)  # ตรวจสอบทุก 0.1 วินาที
+        self.land()
     
     def _scan_area_mission(self):
-        """Scan Area Mission - ปรับปรุงให้มีการแสดงภาพในแต่ละมุม"""
+        """Scan Area Mission"""
         self.log_message("🔍 Executing scan area mission...")
         
         # 1. ขึ้นบิน
         if not self.is_flying:
-            if self.stop_execution:
-                return
             self.takeoff()
-            self._interruptible_sleep(2)
+            time.sleep(2)
         
-        # 2. สแกนรอบตัว 360 องศา
-        angles = [0, 90, 180, 270]  # มุมแต่ละด้าน
-        
-        for i, angle in enumerate(angles):
-            if not self.auto_mission_running or self.stop_execution:
+        # 2. สแกนรอบตัว
+        for i in range(4):
+            if not self.auto_mission_running:
                 break
-            
-            self.log_message(f"📸 Scanning direction {i+1}/4 (angle: {angle}°)")
             
             # ถ่ายรูป
-            images = self.take_picture(1)
-            if images:
-                # ส่งรูปไปยัง terminal พร้อมข้อมูลเพิ่มเติม
-                if hasattr(self, 'log_callback') and self.log_callback:
-                    self.log_callback({
-                        'type': 'image',
-                        'path': images[0],
-                        'description': f'Area Scan - Direction {i+1}/4 (Angle: {angle}°)'
-                    })
+            self.take_picture(1)
+            time.sleep(1)
             
-            if self.stop_execution:
-                break
-                
-            self._interruptible_sleep(1)
-            
-            # หมุน 90 องศา (ยกเว้นครั้งสุดท้าย)
-            if i < len(angles) - 1 and not self.stop_execution:
-                self.rotate_clockwise(90)
-                self._interruptible_sleep(1)
+            # หมุน 90 องศา
+            self.rotate_clockwise(90)
+            time.sleep(1)
         
-        # 3. สรุปการสแกน
-        if not self.stop_execution:
-            total_images = len(self.last_captured_images) if hasattr(self, 'last_captured_images') else 0
-            self.log_message(f"📊 Area scan completed - Total images captured: {total_images}")
-        
-        # 4. ลงจอด
-        if not self.stop_execution:
-            self.land()
+        # 3. ลงจอด
+        self.land()
     
     def _find_mission_pads_mission(self):
         """Find Mission Pads Mission - ปรับปรุงใหม่"""
         self.log_message("🎯 Executing find mission pads mission...")
         
         # 1. เปิด Mission Pads
-        if self.stop_execution:
-            return
         self.enable_mission_pads()
-        self._interruptible_sleep(1)
+        time.sleep(1)
         
         # 2. ขึ้นบิน
-        if not self.is_flying and not self.stop_execution:
+        if not self.is_flying:
             self.takeoff()
-            self._interruptible_sleep(2)
+            time.sleep(2)
         
         # 3. ค้นหา Mission Pads แบบรอบคอบ
         found_pads = []
@@ -940,7 +1219,7 @@ class DroneGUIConnector:
         current_pos = [0, 0]  # ติดตามตำแหน่งปัจจุบัน
         
         for i, (target_x, target_y) in enumerate(search_positions):
-            if not self.auto_mission_running or self.stop_execution:
+            if not self.auto_mission_running:
                 break
             
             self.log_message(f"🔍 Search position {i+1}/{len(search_positions)}: ({target_x}, {target_y})")
@@ -949,65 +1228,57 @@ class DroneGUIConnector:
             dx = target_x - current_pos[0]
             dy = target_y - current_pos[1]
             
-            if abs(dx) > 0.1 and not self.stop_execution:  # เคลื่อนที่ในแกน X
+            if abs(dx) > 0.1:  # เคลื่อนที่ในแกน X
                 if dx > 0:
                     self._execute_movement("right", abs(dx))
                 else:
                     self._execute_movement("left", abs(dx))
             
-            if abs(dy) > 0.1 and not self.stop_execution:  # เคลื่อนที่ในแกน Y
+            if abs(dy) > 0.1:  # เคลื่อนที่ในแกน Y
                 if dy > 0:
                     self._execute_movement("forward", abs(dy))
                 else:
                     self._execute_movement("backward", abs(dy))
             
             current_pos = [target_x, target_y]
-            
-            if self.stop_execution:
-                break
-                
-            self._interruptible_sleep(1)
+            time.sleep(1)
             
             # ตรวจหา Mission Pads ด้วยทุกวิธี
-            if not self.stop_execution:
-                pads_auto = self.detect_mission_pads("auto")
-                pads_all = self.detect_mission_pads("all")
-                
-                # รวมผลลัพธ์
-                all_pads = pads_auto + pads_all
-                found_pads.extend(all_pads)
-                
-                if all_pads:
-                    self.log_message(f"🎯 Found {len(all_pads)} mission pad(s) at position ({target_x}, {target_y})")
-                    for pad in all_pads:
-                        self.log_message(f"  📍 ID: {pad['id']}, Method: {pad.get('method', 'unknown')}")
+            pads_auto = self.detect_mission_pads("auto")
+            pads_all = self.detect_mission_pads("all")
+            
+            # รวมผลลัพธ์
+            all_pads = pads_auto + pads_all
+            found_pads.extend(all_pads)
+            
+            if all_pads:
+                self.log_message(f"🎯 Found {len(all_pads)} mission pad(s) at position ({target_x}, {target_y})")
+                for pad in all_pads:
+                    self.log_message(f"  📍 ID: {pad['id']}, Method: {pad.get('method', 'unknown')}, Confidence: {pad.get('confidence', 0):.2f}")
             
             # หมุนรอบตัวเพื่อค้นหา
             for angle in [90, 90, 90, 90]:  # หมุน 360 องศา
-                if not self.auto_mission_running or self.stop_execution:
+                if not self.auto_mission_running:
                     break
                 
                 self.rotate_clockwise(angle)
-                self._interruptible_sleep(1)
+                time.sleep(1)
                 
                 # ตรวจหาอีกครั้งหลังหมุน
-                if not self.stop_execution:
-                    pads_rotated = self.detect_mission_pads("auto")
-                    found_pads.extend(pads_rotated)
-                    
-                    if pads_rotated:
-                        self.log_message(f"🔄 Found additional pads after rotation: {len(pads_rotated)}")
+                pads_rotated = self.detect_mission_pads("auto")
+                found_pads.extend(pads_rotated)
+                
+                if pads_rotated:
+                    self.log_message(f"🔄 Found additional pads after rotation: {len(pads_rotated)}")
         
         # 4. สรุปผลและกลับไปยังตำแหน่งเริ่มต้น
-        if not self.stop_execution:
-            self.log_message("🏠 Returning to start position...")
-            self._execute_movement("right", -current_pos[0]) if current_pos[0] < 0 else self._execute_movement("left", current_pos[0])
-            self._execute_movement("forward", -current_pos[1]) if current_pos[1] < 0 else self._execute_movement("backward", current_pos[1])
+        self.log_message("🏠 Returning to start position...")
+        self._execute_movement("right", -current_pos[0]) if current_pos[0] < 0 else self._execute_movement("left", current_pos[0])
+        self._execute_movement("forward", -current_pos[1]) if current_pos[1] < 0 else self._execute_movement("backward", current_pos[1])
         
         # 5. สรุปผล
-        if not self.stop_execution:
-            unique_pads = self._remove_duplicate_pads(found_pads)
-            unique_ids = list(set([pad['id'] for pad in unique_pads]))
+        unique_pads = self._remove_duplicate_pads(found_pads)
+        unique_ids = list(set([pad['id'] for pad in unique_pads]))
         
         self.log_message(f"📊 Mission Pad Search Summary:")
         self.log_message(f"  Total detections: {len(found_pads)}")
@@ -1065,8 +1336,17 @@ class DroneGUIConnector:
             'position': self.current_position,
             'camera_active': self.camera_active,
             'mission_pad_enabled': self.mission_pad_enabled,
+            'proximity_sensors_enabled': self.proximity_sensors_enabled,
             'auto_mission_running': self.auto_mission_running
         }
+        
+        # เพิ่มข้อมูล proximity sensors ถ้าเปิดใช้งาน
+        if self.proximity_sensors_enabled:
+            try:
+                status['current_height'] = self.get_height()
+                status['distance_reading'] = self.read_distance()
+            except:
+                pass
         
         if self.drone_mode == "real" and self.real_drone:
             try:
@@ -1111,6 +1391,212 @@ class DroneGUIConnector:
             except Exception as e:
                 self.log_message(f"❌ Wind setting error: {e}")
         return False
+    
+    # ==================== ADDITIONAL DRONE CONTROLLER FUNCTIONS ====================
+    # เพิ่มฟังก์ชันที่สำคัญที่ควรตรงกับ drone_controller.py
+    
+    def get_battery(self):
+        """ดูระดับแบตเตอรี่ - ตรงกับ drone_controller.get_battery()"""
+        if not self.is_connected:
+            self.log_message("❌ Drone not connected")
+            return -1
+        
+        try:
+            if hasattr(self.current_drone, 'get_battery'):
+                battery = self.current_drone.get_battery()
+                self.log_message(f"🔋 Battery: {battery}%")
+                return battery
+            else:
+                self.log_message("⚠️ Battery reading not available")
+                return -1
+        except Exception as e:
+            self.log_message(f"❌ Battery read error: {e}")
+            return -1
+    
+    def get_position(self):
+        """ดึงตำแหน่งปัจจุบัน - ตรงกับ drone_controller.get_position()"""
+        if not self.is_connected:
+            return [0, 0, 0]
+        
+        try:
+            if hasattr(self.current_drone, 'get_position'):
+                return self.current_drone.get_position()
+            else:
+                return self.current_position
+        except Exception as e:
+            self.log_message(f"❌ Position read error: {e}")
+            return [0, 0, 0]
+    
+    def get_orientation(self):
+        """ดึงทิศทางปัจจุบัน - ตรงกับ drone_controller.get_orientation()"""
+        if not self.is_connected:
+            return [0, 0, 0, 0]
+        
+        try:
+            if hasattr(self.current_drone, 'get_orientation'):
+                return self.current_drone.get_orientation()
+            else:
+                self.log_message("⚠️ Orientation reading not available")
+                return [0, 0, 0, 0]
+        except Exception as e:
+            self.log_message(f"❌ Orientation read error: {e}")
+            return [0, 0, 0, 0]
+    
+    def take_bottom_picture(self):
+        """ถ่ายรูปด้วยกล้องล่าง - ตรงกับ drone_controller.take_bottom_picture()"""
+        if not self.is_connected:
+            self.log_message("❌ Drone not connected")
+            return None
+        
+        try:
+            if hasattr(self.current_drone, 'take_bottom_picture'):
+                result = self.current_drone.take_bottom_picture()
+                if result:
+                    self.log_message(f"✅ Bottom picture captured: {result}")
+                else:
+                    self.log_message("❌ Bottom picture capture failed")
+                return result
+            else:
+                self.log_message("⚠️ Bottom camera not available")
+                return None
+        except Exception as e:
+            self.log_message(f"❌ Bottom picture error: {e}")
+            return None
+    
+    def move_to_position(self, x, y, z):
+        """เคลื่อนที่ไปยังตำแหน่งเฉพาะ - ตรงกับ drone_controller.move_to_position()"""
+        if not self.is_flying:
+            self.log_message("❌ Drone not flying")
+            return False
+        
+        try:
+            self.log_message(f"🎯 Moving to position ({x}, {y}, {z})...")
+            if hasattr(self.current_drone, 'move_to_position'):
+                result = self.current_drone.move_to_position(x, y, z)
+                if result:
+                    self.log_message("✅ Position reached")
+                    self._update_position()
+                else:
+                    self.log_message("❌ Failed to reach position")
+                return result
+            else:
+                self.log_message("⚠️ Position movement not available")
+                return False
+        except Exception as e:
+            self.log_message(f"❌ Move to position error: {e}")
+            return False
+    
+    def smart_mission_pad_scan(self, image_path=None, use_multiple_methods=True):
+        """ตรวจจับ Mission Pad แบบขั้นสูง - ตรงกับ drone_controller.smart_mission_pad_scan()"""
+        if hasattr(self.current_drone, 'smart_mission_pad_scan'):
+            try:
+                result = self.current_drone.smart_mission_pad_scan(image_path, use_multiple_methods)
+                if result:
+                    self.log_message(f"✅ Smart mission pad scan found: {result}")
+                else:
+                    self.log_message("❌ No mission pads found")
+                return result
+            except Exception as e:
+                self.log_message(f"❌ Smart mission pad scan error: {e}")
+                return None
+        else:
+            # Fallback ใช้ฟังก์ชันของเรา
+            return self.scan_mission_pad("all")
+    
+    def scan_mission_pad_enhanced(self, attempts=3, delay=1.0):
+        """ตรวจจับ Mission Pad แบบลองหลายครั้ง - ตรงกับ drone_controller.scan_mission_pad_enhanced()"""
+        if hasattr(self.current_drone, 'scan_mission_pad_enhanced'):
+            try:
+                result = self.current_drone.scan_mission_pad_enhanced(attempts, delay)
+                if result:
+                    self.log_message(f"✅ Enhanced mission pad scan found: {result}")
+                else:
+                    self.log_message("❌ No mission pads found after enhanced scan")
+                return result
+            except Exception as e:
+                self.log_message(f"❌ Enhanced mission pad scan error: {e}")
+                return None
+        else:
+            # Fallback - ลองหลายครั้ง
+            for i in range(attempts):
+                result = self.scan_mission_pad("auto")
+                if result:
+                    return result
+                if i < attempts - 1:
+                    time.sleep(delay)
+            return None
+    
+    def wait(self, seconds):
+        """รอเวลา - ตรงกับ drone_controller.wait()"""
+        self.log_message(f"⏰ Waiting {seconds} seconds...")
+        time.sleep(seconds)
+        self.log_message("✅ Wait completed")
+    
+    def is_close_to_ground(self, threshold=0.3):
+        """ตรวจสอบว่าใกล้พื้นหรือไม่ - ตรงกับ drone_controller.is_close_to_ground()
+        
+        Args:
+            threshold: ระยะห่างที่ถือว่าใกล้พื้น (เมตร)
+            
+        Returns:
+            bool: True ถ้าใกล้พื้น
+        """
+        height = self.get_height()
+        if height is not None:
+            is_close = height <= threshold
+            self.log_message(f"🔍 Close to ground check: {height:.2f}m <= {threshold}m = {is_close}")
+            return is_close
+        return False
+    
+    def wait_until_height(self, target_height, timeout=10):
+        """รอจนกว่าจะถึงความสูงที่ต้องการ - ตรงกับ drone_controller.wait_until_height()
+        
+        Args:
+            target_height: ความสูงเป้าหมาย (เมตร)
+            timeout: เวลาสูงสุดที่จะรอ (วินาที)
+            
+        Returns:
+            bool: True ถ้าถึงความสูงที่ต้องการ
+        """
+        import time
+        start_time = time.time()
+        
+        self.log_message(f"⏳ Waiting for height {target_height:.2f}m (timeout: {timeout}s)")
+        
+        while time.time() - start_time < timeout:
+            height = self.get_height()
+            if height is not None and abs(height - target_height) < 0.1:
+                self.log_message(f"✅ ถึงความสูง {target_height:.2f} เมตรแล้ว")
+                return True
+            
+            time.sleep(0.1)
+        
+        self.log_message(f"⏰ หมดเวลารอ ({timeout} วินาที)")
+        return False
+    
+    def monitor_height(self, duration=5):
+        """ตรวจสอบความสูงแบบต่อเนื่อง - ตรงกับ drone_controller.monitor_height()
+        
+        Args:
+            duration: ระยะเวลาที่จะตรวจสอบ (วินาที)
+        """
+        import time
+        start_time = time.time()
+        
+        self.log_message(f"📡 ตรวจสอบความสูงเป็นเวลา {duration} วินาที...")
+        
+        while time.time() - start_time < duration:
+            height = self.get_height()
+            elapsed = time.time() - start_time
+            if height is not None:
+                self.log_message(f"  ⏱️ {elapsed:.1f}s: {height:.2f}m")
+            else:
+                self.log_message(f"  ⏱️ {elapsed:.1f}s: ไม่มีข้อมูล")
+            
+            time.sleep(0.5)
+        
+        self.log_message("✅ เสร็จสิ้นการตรวจสอบความสูง")
+    
 
 
 # ==================== GUI INTEGRATION FUNCTIONS ====================
@@ -1136,533 +1622,212 @@ def create_drone_control_tab(notebook, drone_connector):
              command=drone_connector.disconnect,
              bg='#e74c3c', fg='white', font=('Arial', 9, 'bold')).pack(side=tk.LEFT, padx=5, pady=5)
     
-    # Create main container with paned window for resizable sections
-    main_paned = tk.PanedWindow(drone_tab, orient=tk.HORIZONTAL)
-    main_paned.pack(fill=tk.BOTH, expand=True, padx=10, pady=5)
+    # Main content frame - split into left and right panels
+    main_content_frame = tk.Frame(drone_tab)
+    main_content_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=5)
     
-    # Python Code Editor Frame (Left side)
-    code_frame = tk.LabelFrame(main_paned, text="🐍 Python Drone Control", font=('Arial', 10, 'bold'))
-    main_paned.add(code_frame, minsize=400, width=500)
+    # Left panel - Python Code Editor
+    code_frame = tk.LabelFrame(main_content_frame, text="🐍 Python Drone Control", font=('Arial', 10, 'bold'))
+    code_frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=(0, 5))
     
-    # Terminal Output Frame (Right side)
-    terminal_frame = tk.LabelFrame(main_paned, text="🖥️ Terminal Output", font=('Arial', 10, 'bold'))
-    main_paned.add(terminal_frame, minsize=400, width=500)
-    
-    # Create terminal output area with scrollable text and image display
-    terminal_notebook = ttk.Notebook(terminal_frame)
-    terminal_notebook.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
-    
-    # Text Output Tab
-    text_output_frame = ttk.Frame(terminal_notebook)
-    terminal_notebook.add(text_output_frame, text="📝 Text Output")
-    
-    # Terminal text widget with scrollbar
-    terminal_text_frame = tk.Frame(text_output_frame)
-    terminal_text_frame.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
-    
-    terminal_text = tk.Text(terminal_text_frame, wrap=tk.WORD, font=('Consolas', 9),
-                           bg='#1e1e1e', fg='#ffffff', insertbackground='white',
-                           selectbackground='#0078d4', relief=tk.FLAT, bd=5,
-                           state=tk.DISABLED)
-    
-    terminal_scrollbar = tk.Scrollbar(terminal_text_frame, orient=tk.VERTICAL, command=terminal_text.yview)
-    terminal_text.configure(yscrollcommand=terminal_scrollbar.set)
-    
-    terminal_text.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
-    terminal_scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
-    
-    # Configure text tags for different message types
-    terminal_text.tag_configure('info', foreground='#00ff00')  # Green
-    terminal_text.tag_configure('error', foreground='#ff4444')  # Red
-    terminal_text.tag_configure('warning', foreground='#ffaa00')  # Orange
-    terminal_text.tag_configure('success', foreground='#00aaff')  # Blue
-    terminal_text.tag_configure('timestamp', foreground='#888888')  # Gray
-    
-    # Terminal control buttons
-    terminal_control_frame = tk.Frame(text_output_frame)
-    terminal_control_frame.pack(fill=tk.X, padx=5, pady=5)
-    
-    def clear_terminal():
-        """Clear terminal output"""
-        terminal_text.config(state=tk.NORMAL)
-        terminal_text.delete(1.0, tk.END)
-        terminal_text.config(state=tk.DISABLED)
-    
-    def save_terminal_output():
-        """Save terminal output to file"""
-        try:
-            from tkinter import filedialog
-            content = terminal_text.get(1.0, tk.END)
-            file_path = filedialog.asksaveasfilename(
-                defaultextension=".txt",
-                filetypes=[("Text files", "*.txt"), ("All files", "*.*")]
-            )
-            if file_path:
-                with open(file_path, 'w', encoding='utf-8') as f:
-                    f.write(content)
-                append_terminal_message(f"💾 Terminal output saved to: {file_path}", 'success')
-        except Exception as e:
-            append_terminal_message(f"❌ Save error: {e}", 'error')
-    
-    tk.Button(terminal_control_frame, text="🗑️ Clear", command=clear_terminal,
-             bg='#e74c3c', fg='white', font=('Arial', 8, 'bold')).pack(side=tk.LEFT, padx=2)
-    
-    tk.Button(terminal_control_frame, text="💾 Save Output", command=save_terminal_output,
-             bg='#9b59b6', fg='white', font=('Arial', 8, 'bold')).pack(side=tk.LEFT, padx=2)
-    
-    # Image Display Tab
-    image_output_frame = ttk.Frame(terminal_notebook)
-    terminal_notebook.add(image_output_frame, text="🖼️ Images")
-    
-    # Image display area with scrollbar
-    image_canvas_frame = tk.Frame(image_output_frame)
-    image_canvas_frame.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
-    
-    image_canvas = tk.Canvas(image_canvas_frame, bg='#2c3e50')
-    image_scrollbar_v = tk.Scrollbar(image_canvas_frame, orient=tk.VERTICAL, command=image_canvas.yview)
-    image_scrollbar_h = tk.Scrollbar(image_canvas_frame, orient=tk.HORIZONTAL, command=image_canvas.xview)
-    
-    image_canvas.configure(yscrollcommand=image_scrollbar_v.set, xscrollcommand=image_scrollbar_h.set)
-    
-    image_canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
-    image_scrollbar_v.pack(side=tk.RIGHT, fill=tk.Y)
-    image_scrollbar_h.pack(side=tk.BOTTOM, fill=tk.X)
-    
-    # Image control frame
-    image_control_frame = tk.Frame(image_output_frame)
-    image_control_frame.pack(fill=tk.X, padx=5, pady=5)
-    
-    # Image list to keep track of displayed images
-    displayed_images = []
-    current_image_index = 0
-    
-    def display_image(image_path, description=""):
-        """Display image in the image canvas"""
-        try:
-            if not PIL_AVAILABLE:
-                append_terminal_message("❌ PIL (Pillow) not available. Cannot display images.", 'error')
-                append_terminal_message("💡 Install Pillow: pip install Pillow", 'info')
-                return
-                
-            from PIL import Image, ImageTk
-            import os
-            
-            if not os.path.exists(image_path):
-                append_terminal_message(f"❌ Image not found: {image_path}", 'error')
-                return
-            
-            # Load and resize image
-            pil_image = Image.open(image_path)
-            
-            # Calculate size to fit in canvas (max 800x600)
-            canvas_width = 800
-            canvas_height = 600
-            img_width, img_height = pil_image.size
-            
-            scale_x = canvas_width / img_width
-            scale_y = canvas_height / img_height
-            scale = min(scale_x, scale_y, 1.0)  # Don't upscale
-            
-            new_width = int(img_width * scale)
-            new_height = int(img_height * scale)
-            
-            pil_image = pil_image.resize((new_width, new_height), Image.Resampling.LANCZOS)
-            tk_image = ImageTk.PhotoImage(pil_image)
-            
-            # Clear canvas and display image
-            image_canvas.delete("all")
-            image_canvas.create_image(canvas_width//2, canvas_height//2, image=tk_image, anchor=tk.CENTER)
-            image_canvas.configure(scrollregion=image_canvas.bbox("all"))
-            
-            # Store image reference and info
-            image_info = {
-                'path': image_path,
-                'tk_image': tk_image,
-                'description': description,
-                'timestamp': time.strftime("%H:%M:%S")
-            }
-            displayed_images.append(image_info)
-            
-            # Update image counter
-            update_image_counter()
-            
-            # Log image display
-            filename = os.path.basename(image_path)
-            append_terminal_message(f"🖼️ Image displayed: {filename} ({description})", 'info')
-            
-        except Exception as e:
-            append_terminal_message(f"❌ Image display error: {e}", 'error')
-    
-    def update_image_counter():
-        """Update image counter display"""
-        total = len(displayed_images)
-        current = current_image_index + 1 if displayed_images else 0
-        image_counter_label.config(text=f"📸 Image {current}/{total}")
-    
-    def show_previous_image():
-        """Show previous image"""
-        global current_image_index
-        if displayed_images and current_image_index > 0:
-            current_image_index -= 1
-            image_info = displayed_images[current_image_index]
-            show_stored_image(image_info)
-    
-    def show_next_image():
-        """Show next image"""
-        global current_image_index
-        if displayed_images and current_image_index < len(displayed_images) - 1:
-            current_image_index += 1
-            image_info = displayed_images[current_image_index]
-            show_stored_image(image_info)
-    
-    def show_stored_image(image_info):
-        """Show a stored image"""
-        try:
-            # Clear canvas and display stored image
-            image_canvas.delete("all")
-            canvas_width = 800
-            canvas_height = 600
-            image_canvas.create_image(canvas_width//2, canvas_height//2, 
-                                    image=image_info['tk_image'], anchor=tk.CENTER)
-            image_canvas.configure(scrollregion=image_canvas.bbox("all"))
-            update_image_counter()
-            
-            # Show image info
-            append_terminal_message(f"🖼️ Showing: {os.path.basename(image_info['path'])} "
-                                  f"({image_info['description']}) - {image_info['timestamp']}", 'info')
-            
-        except Exception as e:
-            append_terminal_message(f"❌ Error showing stored image: {e}", 'error')
-    
-    def clear_images():
-        """Clear all displayed images"""
-        global displayed_images, current_image_index
-        displayed_images = []
-        current_image_index = 0
-        image_canvas.delete("all")
-        update_image_counter()
-        append_terminal_message("🗑️ All images cleared", 'info')
-    
-    # Image navigation buttons
-    tk.Button(image_control_frame, text="⬅️ Previous", command=show_previous_image,
-             bg='#3498db', fg='white', font=('Arial', 8, 'bold')).pack(side=tk.LEFT, padx=2)
-    
-    tk.Button(image_control_frame, text="➡️ Next", command=show_next_image,
-             bg='#3498db', fg='white', font=('Arial', 8, 'bold')).pack(side=tk.LEFT, padx=2)
-    
-    tk.Button(image_control_frame, text="🗑️ Clear Images", command=clear_images,
-             bg='#e74c3c', fg='white', font=('Arial', 8, 'bold')).pack(side=tk.LEFT, padx=2)
-    
-    image_counter_label = tk.Label(image_control_frame, text="📸 Image 0/0", 
-                                  font=('Arial', 9, 'bold'))
-    image_counter_label.pack(side=tk.RIGHT, padx=5)
-    
-    # Function to append messages to terminal with real-time updates
-    def append_terminal_message(message, tag='info'):
-        """Append message to terminal with timestamp and auto-scroll"""
-        try:
-            timestamp = time.strftime("[%H:%M:%S]")
-            
-            terminal_text.config(state=tk.NORMAL)
-            
-            # Add timestamp
-            terminal_text.insert(tk.END, timestamp, 'timestamp')
-            terminal_text.insert(tk.END, " ")
-            
-            # Add message with appropriate tag
-            terminal_text.insert(tk.END, message, tag)
-            terminal_text.insert(tk.END, "\n")
-            
-            # Auto-scroll to bottom
-            terminal_text.see(tk.END)
-            terminal_text.config(state=tk.DISABLED)
-            
-            # Update GUI
-            terminal_text.update_idletasks()
-            
-        except Exception as e:
-            print(f"Terminal display error: {e}")
-    
-    # Enhanced log callback that handles images
-    def enhanced_log_callback(message):
-        """Enhanced log callback that can handle both text and images"""
-        try:
-            # Check if message contains image information
-            if isinstance(message, dict):
-                if 'type' in message and message['type'] == 'image':
-                    # Handle image message
-                    image_path = message.get('path', '')
-                    description = message.get('description', 'Captured image')
-                    if image_path:
-                        display_image(image_path, description)
-                elif 'type' in message and message['type'] == 'text':
-                    # Handle text message with specific tag
-                    text = message.get('text', str(message))
-                    tag = message.get('tag', 'info')
-                    append_terminal_message(text, tag)
-                else:
-                    # Handle dictionary as text
-                    append_terminal_message(str(message), 'info')
-            else:
-                # Handle regular text message
-                # Determine message type based on content
-                message_str = str(message)
-                if "❌" in message_str or "ERROR" in message_str.upper():
-                    tag = 'error'
-                elif "⚠️" in message_str or "WARNING" in message_str.upper():
-                    tag = 'warning'
-                elif "✅" in message_str or "SUCCESS" in message_str.upper():
-                    tag = 'success'
-                else:
-                    tag = 'info'
-                
-                append_terminal_message(message_str, tag)
-                
-        except Exception as e:
-            append_terminal_message(f"Log callback error: {e}", 'error')
-    
-    # Set the enhanced log callback for the drone connector
-    drone_connector.set_log_callback(enhanced_log_callback)
-    
-    # Initial welcome message
-    append_terminal_message("🚁 Drone Control Terminal Ready", 'success')
-    append_terminal_message("📡 Connect to drone and start controlling!", 'info')
+    # Right panel - Terminal Output
+    log_frame = tk.LabelFrame(main_content_frame, text="📋 Terminal Output / Logs", font=('Arial', 10, 'bold'))
+    log_frame.pack(side=tk.RIGHT, fill=tk.BOTH, expand=True, padx=(5, 0))
     
     # Code input area
     code_input_frame = tk.Frame(code_frame)
     code_input_frame.pack(fill=tk.BOTH, expand=True, pady=5)
     
-    # Label
+    # Label with copy-paste instructions
+    help_label = tk.Label(code_input_frame, 
+                         text="💡 Copy-Paste Support: Ctrl+C/V/X/A/Z/Y | Right-click for menu | Tab for indent", 
+                         font=('Arial', 8), fg='#7f8c8d')
+    help_label.pack(anchor=tk.W, padx=5)
+    
     tk.Label(code_input_frame, text="Enter Python code to control the drone:", 
              font=('Arial', 9, 'bold')).pack(anchor=tk.W, padx=5)
     
-    # Text widget with scrollbar
+    # Text widget with scrollbar and enhanced copy-paste support
     text_frame = tk.Frame(code_input_frame)
     text_frame.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
     
     code_text = tk.Text(text_frame, wrap=tk.WORD, font=('Consolas', 10), 
                        bg='#2c3e50', fg='#ecf0f1', insertbackground='white',
-                       selectbackground='#3498db', relief=tk.FLAT, bd=5)
+                       selectbackground='#3498db', relief=tk.FLAT, bd=5,
+                       undo=True, maxundo=20)  # Enable undo functionality
     
     scrollbar = tk.Scrollbar(text_frame, orient=tk.VERTICAL, command=code_text.yview)
     code_text.configure(yscrollcommand=scrollbar.set)
+    
+    # Enhanced keyboard shortcuts for better copy-paste experience
+    def on_key_press(event):
+        """Handle keyboard shortcuts"""
+        if event.state & 0x4:  # Ctrl key pressed
+            if event.keysym == 'a':  # Ctrl+A - Select All
+                code_text.tag_add(tk.SEL, "1.0", tk.END)
+                return "break"
+            elif event.keysym == 'c':  # Ctrl+C - Copy (default behavior)
+                return None
+            elif event.keysym == 'v':  # Ctrl+V - Paste (default behavior)
+                return None
+            elif event.keysym == 'x':  # Ctrl+X - Cut (default behavior)
+                return None
+            elif event.keysym == 'z':  # Ctrl+Z - Undo
+                try:
+                    code_text.edit_undo()
+                except tk.TclError:
+                    pass
+                return "break"
+            elif event.keysym == 'y':  # Ctrl+Y - Redo
+                try:
+                    code_text.edit_redo()
+                except tk.TclError:
+                    pass
+                return "break"
+        elif event.keysym == 'Tab':  # Tab - Insert 4 spaces for proper Python indentation
+            code_text.insert(tk.INSERT, "    ")  # 4 spaces
+            return "break"
+        elif event.keysym == 'Return':  # Enter - Auto-indent for Python
+            # Get current line content to determine indentation
+            current_line = code_text.get("insert linestart", "insert")
+            indent = ""
+            for char in current_line:
+                if char in [' ', '\t']:
+                    indent += char
+                else:
+                    break
+            
+            # Add extra indent if line ends with ':'
+            if current_line.rstrip().endswith(':'):
+                indent += "    "
+            
+            code_text.insert(tk.INSERT, f"\n{indent}")
+            return "break"
+    
+    code_text.bind('<Key>', on_key_press)
+    
+    # Right-click context menu for copy-paste operations
+    def show_context_menu(event):
+        """Show context menu on right-click"""
+        context_menu = tk.Menu(code_text, tearoff=0)
+        
+        # Copy-paste operations
+        context_menu.add_command(label="📋 Cut", command=lambda: code_text.event_generate('<<Cut>>'))
+        context_menu.add_command(label="📄 Copy", command=lambda: code_text.event_generate('<<Copy>>'))
+        context_menu.add_command(label="📌 Paste", command=lambda: code_text.event_generate('<<Paste>>'))
+        context_menu.add_separator()
+        context_menu.add_command(label="🔄 Select All", command=lambda: code_text.tag_add(tk.SEL, "1.0", tk.END))
+        context_menu.add_separator()
+        context_menu.add_command(label="↶ Undo", command=lambda: code_text.edit_undo())
+        context_menu.add_command(label="↷ Redo", command=lambda: code_text.edit_redo())
+        context_menu.add_separator()
+        context_menu.add_command(label="🗑️ Clear All", command=lambda: code_text.delete(1.0, tk.END))
+        
+        try:
+            context_menu.tk_popup(event.x_root, event.y_root)
+        finally:
+            context_menu.grab_release()
+    
+    code_text.bind("<Button-3>", show_context_menu)  # Right-click
     
     code_text.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
     scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
     
     # Add default example code
-    default_code = """# 🚁 Python Drone Control - Terminal & Image Examples
+    default_code = """# 🚁 Python Drone Control - Simple Examples
+# Available drone object: 'drone'
 
-# Basic flight with terminal logging
+# 1. Basic Flight Test
 drone.takeoff()                    # Take off
 print("✅ Takeoff successful!")
-terminal_log("🚁 Drone is now airborne", 'success')
+drone.hover(3)                     # Hover for 3 seconds
+drone.move_forward(1.0)           # Move forward 1 meter
+drone.rotate_clockwise(90)        # Rotate 90 degrees
+drone.land()                      # Land
+print("✅ Basic flight completed!")
 
-# Take pictures and display in terminal
-images = drone.take_picture(3)     # Take 3 pictures (auto-displayed)
-print(f"📸 Captured {len(images)} images")
+# 2. Square Flight Pattern (uncomment to use)
+# drone.takeoff()
+# for i in range(4):
+#     drone.move_forward(1.0)
+#     drone.rotate_clockwise(90)
+#     print(f"Completed side {i+1}")
+# drone.land()
 
-# Another interruptible delay
-print("⏳ Processing delay (5 seconds)...")
-sleep(5)  # Try clicking Stop during this delay!
+# 3. Camera and Detection (uncomment to use)
+# drone.start_camera()
+# drone.enable_mission_pads()
+# drone.takeoff()
+# images = drone.take_picture(1)
+# pads = drone.detect_mission_pads("auto")
+# print(f"Found {len(pads)} mission pads")
+# drone.land()
 
-# Movement with stop checks
-if not stop_execution():
-    print("� Moving in square pattern...")
-    for direction in ["forward", "right", "backward", "left"]:
-        if stop_execution():
-            print("� Movement interrupted")
-            break
-        print(f"Moving {direction}...")
-        getattr(drone, f"move_{direction}")(0.5)
-        sleep(1)  # Interruptible delay between movements
-
-# Safe landing
-if not stop_execution():
-    print("🛬 Landing safely...")
-    drone.land()
-    terminal_log("Mission completed successfully!", 'success')
-else:
-    print("� Emergency landing due to stop request...")
-    drone.land()
-    terminal_log("Mission stopped by user", 'warning')
-
-print("✅ Script finished")
-
-# 💡 Pro Tips:
-# 1. Always use sleep() instead of time.sleep() for delays
-# 2. Check stop_execution() in loops for better responsiveness  
-# 3. Use terminal_log() for colored messages in terminal
-# 4. GUI will remain responsive during code execution!"""
+# 4. Status Check
+print("=== Current Status ===")
+print(f"Connected: {drone.is_connected}")
+print(f"Flying: {drone.is_flying}")
+print(f"Position: {drone.current_position}")
+"""
     
     code_text.insert(tk.END, default_code)
-    
-    # Status display for execution
-    status_frame = tk.Frame(code_frame)
-    status_frame.pack(fill=tk.X, padx=5, pady=2)
-    
-    execution_status_label = tk.Label(status_frame, text="💤 Ready to execute", 
-                                     font=('Arial', 9), fg='#27ae60')
-    execution_status_label.pack(side=tk.LEFT)
-    
-    def update_execution_status(status, color='#27ae60'):
-        """อัปเดตสถานะการทำงาน"""
-        execution_status_label.config(text=status, fg=color)
     
     # Control buttons
     button_frame = tk.Frame(code_frame)
     button_frame.pack(fill=tk.X, padx=5, pady=5)
     
-    # เพิ่มตัวแปรสำหรับจัดการ execution thread
-    execution_thread = None
-    stop_execution = False
-    
     def execute_code():
         """Execute the Python code in the text area"""
-        nonlocal execution_thread, stop_execution
-        
-        # ตรวจสอบว่ามีโค้ดกำลังรันอยู่หรือไม่
-        if execution_thread and execution_thread.is_alive():
-            append_terminal_message("⚠️ Code is already running. Please wait or stop current execution.", 'warning')
-            return
-        
-        code = code_text.get(1.0, tk.END).strip()
-        if not code:
-            append_terminal_message("❌ No code to execute", 'error')
-            return
-        
-        # รีเซ็ต stop flag
-        stop_execution = False
-        
-        # เปลี่ยนสี button ให้แสดงว่ากำลังรัน
-        execute_button.config(bg='#e67e22', text="⏳ Running...")
-        stop_button.config(state=tk.NORMAL)
-        update_execution_status("🏃 Executing code...", '#e67e22')
-        
-        append_terminal_message("🐍 Starting code execution in background...", 'info')
-        
-        def run_code_in_thread():
-            """รันโค้ดใน background thread"""
-            try:
-                # Enhanced print function that can handle images (thread-safe)
-                def enhanced_print(*args, **kwargs):
-                    """Enhanced print function for drone control"""
-                    if stop_execution:
-                        return
-                        
-                    message = " ".join(str(arg) for arg in args)
-                    
-                    # Check if any argument contains image path
-                    for arg in args:
-                        if isinstance(arg, str) and ('.png' in arg.lower() or '.jpg' in arg.lower() or '.jpeg' in arg.lower()):
-                            # This might be an image path, try to display it
-                            if os.path.exists(arg):
-                                # ใช้ after เพื่อให้ thread-safe
-                                code_frame.after(0, lambda: enhanced_log_callback({
-                                    'type': 'image',
-                                    'path': arg,
-                                    'description': 'Code execution result'
-                                }))
-                    
-                    # ใช้ after เพื่อให้ thread-safe
-                    code_frame.after(0, lambda: append_terminal_message(message, 'info'))
-                
-                # Thread-safe terminal log function
-                def thread_safe_terminal_log(message, tag='info'):
-                    """Thread-safe version of terminal_log"""
-                    if not stop_execution:
-                        code_frame.after(0, lambda: append_terminal_message(message, tag))
-                
-                # Thread-safe display image function
-                def thread_safe_display_image(image_path, description=""):
-                    """Thread-safe version of display_image"""
-                    if not stop_execution:
-                        code_frame.after(0, lambda: display_image(image_path, description))
-                
-                # Enhanced time.sleep ที่ตรวจสอบ stop flag
-                def interruptible_sleep(duration):
-                    """Sleep function ที่สามารถหยุดได้"""
-                    start_time = time.time()
-                    while time.time() - start_time < duration and not stop_execution:
-                        time.sleep(0.1)  # ตรวจสอบทุก 0.1 วินาที
-                
-                # Create a safe execution environment
-                exec_globals = {
-                    'drone': drone_connector,
-                    'print': enhanced_print,
-                    'display_image': thread_safe_display_image,
-                    'terminal_log': thread_safe_terminal_log,
-                    'sleep': interruptible_sleep,  # ใช้ sleep ที่หยุดได้
-                    'os': os,
-                    'time': time,
-                    'stop_execution': lambda: stop_execution,  # ฟังก์ชันตรวจสอบการหยุด
-                    'exit': lambda: setattr(sys.modules[__name__], 'stop_execution', True),  # ฟังก์ชันหยุด
-                    '__builtins__': {
-                        'len': len,
-                        'str': str,
-                        'int': int,
-                        'float': float,
-                        'bool': bool,
-                        'list': list,
-                        'dict': dict,
-                        'range': range,
-                        'enumerate': enumerate,
-                        'zip': zip,
-                        'min': min,
-                        'max': max,
-                        'abs': abs,
-                        'round': round,
-                        'sum': sum,
-                        'any': any,
-                        'all': all,
-                    }
+        try:
+            code = code_text.get(1.0, tk.END).strip()
+            if not code:
+                drone_connector.log_message("❌ No code to execute")
+                return
+            
+            drone_connector.log_message("🐍 Executing Python code...")
+            
+            # Create a safe execution environment
+            exec_globals = {
+                'drone': drone_connector,
+                'print': lambda *args: drone_connector.log_message(" ".join(str(arg) for arg in args)),
+                '__builtins__': {
+                    'len': len,
+                    'str': str,
+                    'int': int,
+                    'float': float,
+                    'bool': bool,
+                    'list': list,
+                    'dict': dict,
+                    'range': range,
+                    'enumerate': enumerate,
+                    'zip': zip,
+                    'min': min,
+                    'max': max,
+                    'abs': abs,
+                    'round': round,
+                    'sum': sum,
+                    'any': any,
+                    'all': all,
                 }
-                
-                # Execute the code
-                exec(code, exec_globals)
-                
-                if not stop_execution:
-                    code_frame.after(0, lambda: append_terminal_message("✅ Code executed successfully", 'success'))
-                    code_frame.after(0, lambda: update_execution_status("✅ Completed", '#27ae60'))
-                else:
-                    code_frame.after(0, lambda: append_terminal_message("🛑 Code execution stopped by user", 'warning'))
-                    code_frame.after(0, lambda: update_execution_status("🛑 Stopped", '#e74c3c'))
-                    
-            except Exception as e:
-                if not stop_execution:
-                    code_frame.after(0, lambda: append_terminal_message(f"❌ Code execution error: {e}", 'error'))
-                    code_frame.after(0, lambda: update_execution_status("❌ Error", '#e74c3c'))
-            finally:
-                # รีเซ็ต button เมื่อเสร็จ
-                code_frame.after(0, lambda: reset_execution_buttons())
-        
-        # เริ่ม thread
-        execution_thread = threading.Thread(target=run_code_in_thread, daemon=True)
-        execution_thread.start()
-    
-    def stop_code_execution():
-        """หยุดการรันโค้ด"""
-        nonlocal stop_execution
-        stop_execution = True
-        update_execution_status("🛑 Stopping...", '#e74c3c')
-        append_terminal_message("🛑 Stopping code execution...", 'warning')
-    
-    def reset_execution_buttons():
-        """รีเซ็ต button กลับสู่สถานะปกติ"""
-        execute_button.config(bg='#27ae60', text="▶️ Execute Code")
-        stop_button.config(state=tk.DISABLED)
-        update_execution_status("💤 Ready to execute", '#27ae60')
+            }
+            
+            # Execute the code
+            exec(code, exec_globals)
+            drone_connector.log_message("✅ Code executed successfully")
+            
+        except Exception as e:
+            drone_connector.log_message(f"❌ Code execution error: {e}")
     
     def clear_code():
         """Clear the code text area"""
         code_text.delete(1.0, tk.END)
-        append_terminal_message("🗑️ Code area cleared", 'info')
+        drone_connector.log_message("🗑️ Code area cleared")
     
     def load_example():
         """Load example code"""
         code_text.delete(1.0, tk.END)
         code_text.insert(tk.END, default_code)
-        append_terminal_message("📝 Example code loaded", 'info')
+        drone_connector.log_message("📝 Example code loaded")
     
     def save_code():
         """Save code to file"""
@@ -1676,9 +1841,9 @@ print("✅ Script finished")
             if file_path:
                 with open(file_path, 'w', encoding='utf-8') as f:
                     f.write(code)
-                append_terminal_message(f"💾 Code saved to: {file_path}", 'success')
+                drone_connector.log_message(f"💾 Code saved to: {file_path}")
         except Exception as e:
-            append_terminal_message(f"❌ Save error: {e}", 'error')
+            drone_connector.log_message(f"❌ Save error: {e}")
     
     def load_code():
         """Load code from file"""
@@ -1692,9 +1857,9 @@ print("✅ Script finished")
                     code = f.read()
                 code_text.delete(1.0, tk.END)
                 code_text.insert(tk.END, code)
-                append_terminal_message(f"📂 Code loaded from: {file_path}", 'success')
+                drone_connector.log_message(f"� Code loaded from: {file_path}")
         except Exception as e:
-            append_terminal_message(f"❌ Load error: {e}", 'error')
+            drone_connector.log_message(f"❌ Load error: {e}")
     
     def load_examples_file():
         """Load comprehensive examples from file"""
@@ -1705,23 +1870,18 @@ print("✅ Script finished")
                     code = f.read()
                 code_text.delete(1.0, tk.END)
                 code_text.insert(tk.END, code)
-                append_terminal_message("📚 Comprehensive examples loaded", 'success')
+                drone_connector.log_message("📚 Comprehensive examples loaded")
             else:
-                append_terminal_message("❌ Examples file not found", 'warning')
+                drone_connector.log_message("❌ Examples file not found")
         except Exception as e:
-            append_terminal_message(f"❌ Examples load error: {e}", 'error')
+            drone_connector.log_message(f"❌ Examples load error: {e}")
     
     # Buttons
-    execute_button = tk.Button(button_frame, text="▶️ Execute Code", command=execute_code,
-                              bg='#27ae60', fg='white', font=('Arial', 10, 'bold'))
-    execute_button.pack(side=tk.LEFT, padx=5)
+    tk.Button(button_frame, text="▶️ Execute Code", command=execute_code,
+             bg='#27ae60', fg='white', font=('Arial', 10, 'bold')).pack(side=tk.LEFT, padx=5)
     
-    stop_button = tk.Button(button_frame, text="⏹️ Stop", command=stop_code_execution,
-                           bg='#e74c3c', fg='white', font=('Arial', 10, 'bold'), state=tk.DISABLED)
-    stop_button.pack(side=tk.LEFT, padx=5)
-    
-    tk.Button(button_frame, text="🗑️ Clear", command=clear_code,
-             bg='#95a5a6', fg='white', font=('Arial', 9, 'bold')).pack(side=tk.LEFT, padx=5)
+    tk.Button(button_frame, text="�️ Clear", command=clear_code,
+             bg='#e74c3c', fg='white', font=('Arial', 9, 'bold')).pack(side=tk.LEFT, padx=5)
     
     tk.Button(button_frame, text="� Load Example", command=load_example,
              bg='#3498db', fg='white', font=('Arial', 9, 'bold')).pack(side=tk.LEFT, padx=5)
@@ -1743,104 +1903,26 @@ print("✅ Script finished")
     
     def quick_takeoff():
         code_text.delete(1.0, tk.END)
-        code_text.insert(tk.END, """# Quick Takeoff - Non-blocking
-print("🚀 Quick takeoff sequence...")
-if drone.is_connected:
-    drone.takeoff()
-    terminal_log("Takeoff successful!", 'success')
-    print("✅ Drone is now airborne")
-else:
-    terminal_log("❌ Please connect drone first", 'error')""")
+        code_text.insert(tk.END, "drone.takeoff()\nprint('Drone took off!')")
     
     def quick_land():
         code_text.delete(1.0, tk.END)
-        code_text.insert(tk.END, """# Quick Landing - Non-blocking  
-print("🛬 Landing sequence...")
-if drone.is_connected and drone.is_flying:
-    drone.land()
-    terminal_log("Landing successful!", 'success')
-    print("✅ Drone has landed safely")
-else:
-    terminal_log("❌ Drone not flying or not connected", 'error')""")
+        code_text.insert(tk.END, "drone.land()\nprint('Drone landed!')")
     
     def quick_square():
         code_text.delete(1.0, tk.END)
-        code_text.insert(tk.END, """# Non-blocking Square Flight Pattern
-print("🔲 Starting square flight pattern...")
-
-if not drone.is_connected:
-    terminal_log("❌ Please connect drone first", 'error')
-    exit()
-
-# Take off
-print("🚀 Taking off...")
+        code_text.insert(tk.END, """# Fly in a square pattern
 drone.takeoff()
-sleep(2)
-
-# Square pattern with stop checks
-movements = ["forward", "right", "backward", "left"]
-for i, direction in enumerate(movements):
-    if stop_execution():
-        print("🛑 Square flight interrupted")
-        break
-    
-    print(f"🔄 Side {i+1}/4: Moving {direction}")
-    getattr(drone, f"move_{direction}")(1.0)
-    sleep(1)
-    
-    drone.rotate_clockwise(90)
-    sleep(1)
-    
-    terminal_log(f"Side {i+1} completed", 'info')
-
-# Land safely
-if not stop_execution():
-    print("🛬 Landing...")
-    drone.land()
-    terminal_log("Square flight completed!", 'success')
-else:
-    print("🛑 Emergency landing...")
-    drone.land()
-    terminal_log("Flight stopped by user", 'warning')""")
-    
-    def quick_photo_survey():
-        code_text.delete(1.0, tk.END)
-        code_text.insert(tk.END, """# Photo Survey Mission - Interruptible
-print("📸 Starting photo survey mission...")
-
-if not drone.is_connected:
-    terminal_log("❌ Please connect drone first", 'error')
-    exit()
-
-drone.takeoff()
-sleep(2)
-
-# Take photos in 4 directions
-directions = ["North", "East", "South", "West"]
-for i, direction in enumerate(directions):
-    if stop_execution():
-        print("🛑 Survey interrupted")
-        break
-    
-    print(f"📸 Capturing {direction} view ({i+1}/4)...")
-    images = drone.take_picture(1)
-    
-    if images:
-        terminal_log(f"{direction} photo captured", 'success')
-    
-    # Rotate for next direction (except last)
-    if i < 3:
-        drone.rotate_clockwise(90)
-        sleep(2)
-
-# Return home and land
-if not stop_execution():
-    print("🏠 Survey complete, landing...")
-    drone.land()
-    terminal_log("Photo survey completed!", 'success')
-else:
-    print("🛑 Survey stopped, landing...")
-    drone.land()""")
+drone.move_forward(1.0)
+drone.rotate_clockwise(90)
+drone.move_forward(1.0)
+drone.rotate_clockwise(90)
+drone.move_forward(1.0)
+drone.rotate_clockwise(90)
+drone.move_forward(1.0)
+drone.rotate_clockwise(90)
+drone.land()
+print('Square flight completed!')""")
     
     tk.Button(quick_frame, text="🚁 Takeoff", command=quick_takeoff,
              bg='#1abc9c', fg='white', font=('Arial', 8)).pack(side=tk.LEFT, padx=2)
@@ -1848,11 +1930,94 @@ else:
     tk.Button(quick_frame, text="🛬 Land", command=quick_land,
              bg='#f39c12', fg='white', font=('Arial', 8)).pack(side=tk.LEFT, padx=2)
     
-    tk.Button(quick_frame, text="🔲 Square Flight", command=quick_square,
+    tk.Button(quick_frame, text="🔶 Square Flight", command=quick_square,
              bg='#8e44ad', fg='white', font=('Arial', 8)).pack(side=tk.LEFT, padx=2)
     
-    tk.Button(quick_frame, text="📸 Photo Survey", command=quick_photo_survey,
-             bg='#e67e22', fg='white', font=('Arial', 8)).pack(side=tk.LEFT, padx=2)
+    # === Terminal Output Section (Right Panel) ===
+    
+    # Log text area with scrollbar
+    log_text_frame = tk.Frame(log_frame)
+    log_text_frame.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
+    
+    # Create scrolled text widget for logs
+    log_text = scrolledtext.ScrolledText(
+        log_text_frame,
+        wrap=tk.WORD,
+        font=('Consolas', 9),
+        bg='#1e1e1e',
+        fg='#00ff00',  # Green terminal-like text
+        insertbackground='#00ff00',
+        selectbackground='#333333',
+        relief=tk.FLAT,
+        bd=5,
+        height=20,  # Increased height for side panel
+        state=tk.DISABLED  # Read-only by default
+    )
+    log_text.pack(fill=tk.BOTH, expand=True)
+    
+    # Store reference to log_text in drone_connector for callback
+    drone_connector.log_text_widget = log_text
+    
+    # Log control buttons
+    log_button_frame = tk.Frame(log_frame)
+    log_button_frame.pack(fill=tk.X, padx=5, pady=5)
+    
+    def clear_logs():
+        """Clear all logs"""
+        log_text.config(state=tk.NORMAL)
+        log_text.delete(1.0, tk.END)
+        log_text.config(state=tk.DISABLED)
+        drone_connector.log_message("🗑️ Log cleared")
+    
+    def save_logs():
+        """Save logs to file"""
+        try:
+            from tkinter import filedialog
+            content = log_text.get(1.0, tk.END)
+            if content.strip():
+                file_path = filedialog.asksaveasfilename(
+                    defaultextension=".log",
+                    filetypes=[("Log files", "*.log"), ("Text files", "*.txt"), ("All files", "*.*")],
+                    initialfilename=f"drone_log_{datetime.now().strftime('%Y%m%d_%H%M%S')}.log"
+                )
+                if file_path:
+                    with open(file_path, 'w', encoding='utf-8') as f:
+                        f.write(content)
+                    drone_connector.log_message(f"💾 Logs saved to: {file_path}")
+            else:
+                drone_connector.log_message("❌ No logs to save")
+        except Exception as e:
+            drone_connector.log_message(f"❌ Save logs error: {e}")
+    
+    def toggle_autoscroll():
+        """Toggle auto-scroll to bottom"""
+        if hasattr(drone_connector, 'autoscroll_enabled'):
+            drone_connector.autoscroll_enabled = not drone_connector.autoscroll_enabled
+        else:
+            drone_connector.autoscroll_enabled = True
+        
+        status = "enabled" if drone_connector.autoscroll_enabled else "disabled"
+        drone_connector.log_message(f"🔄 Auto-scroll {status}")
+    
+    # Initialize autoscroll as enabled
+    drone_connector.autoscroll_enabled = True
+    
+    # Log control buttons with smaller size for side panel
+    tk.Button(log_button_frame, text="🗑️ Clear", command=clear_logs,
+             bg='#e74c3c', fg='white', font=('Arial', 8, 'bold')).pack(side=tk.LEFT, padx=2)
+    
+    tk.Button(log_button_frame, text="💾 Save", command=save_logs,
+             bg='#27ae60', fg='white', font=('Arial', 8, 'bold')).pack(side=tk.LEFT, padx=2)
+    
+    tk.Button(log_button_frame, text="🔄 Auto", command=toggle_autoscroll,
+             bg='#3498db', fg='white', font=('Arial', 8, 'bold')).pack(side=tk.LEFT, padx=2)
+    
+    # Add timestamp to show when log area was created
+    initial_message = f"[{datetime.now().strftime('%H:%M:%S')}] 📋 Terminal output initialized - Ready to display logs..."
+    log_text.config(state=tk.NORMAL)
+    log_text.insert(tk.END, initial_message + "\n")
+    log_text.config(state=tk.DISABLED)
+    log_text.see(tk.END)
     
     return drone_tab
 
