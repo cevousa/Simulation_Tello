@@ -7,8 +7,20 @@ Improved Mission Pad Detector - Enhanced version with multiple detection methods
 import cv2
 import numpy as np
 import os
+import sys
 import json
 from datetime import datetime
+
+def get_resource_path(relative_path):
+    """ได้รับ path ที่ถูกต้องสำหรับ PyInstaller"""
+    try:
+        # PyInstaller สร้าง temp folder และเก็บ path ใน _MEIPASS
+        base_path = sys._MEIPASS
+    except Exception:
+        # ถ้าไม่ใช่ PyInstaller จะใช้ current directory
+        base_path = os.path.abspath(".")
+    
+    return os.path.join(base_path, relative_path)
 
 class ImprovedMissionPadDetector:
     def __init__(self, template_folder='mission_pad_templates'):
@@ -18,7 +30,8 @@ class ImprovedMissionPadDetector:
         Args:
             template_folder (str): โฟลเดอร์ที่เก็บ template images
         """
-        self.template_folder = template_folder
+        # ใช้ resource path ที่ถูกต้องสำหรับ PyInstaller
+        self.template_folder = get_resource_path(template_folder)
         self.templates = {}
         self.detection_enabled = False
         self.confidence_threshold = 0.3

@@ -3,7 +3,7 @@ numpy
 Pillow
 pyzmq
 qrcode
-pyzbar
+zxing-cpp
 pyarmor
 pyinstaller
 cryptography

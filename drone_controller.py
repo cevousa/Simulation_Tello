@@ -9,18 +9,30 @@ import time
 import numpy as np
 import cv2
 import os
+import sys
 import math
 from datetime import datetime
 import threading
 from collections import Counter
 
+def get_resource_path(relative_path):
+    """ได้รับ path ที่ถูกต้องสำหรับ PyInstaller"""
+    try:
+        # PyInstaller สร้าง temp folder และเก็บ path ใน _MEIPASS
+        base_path = sys._MEIPASS
+    except Exception:
+        # ถ้าไม่ใช่ PyInstaller จะใช้ current directory
+        base_path = os.path.abspath(".")
+    
+    return os.path.join(base_path, relative_path)
+
 # ตรวจสอบ libraries ที่จำเป็น
 try:
-    from pyzbar import pyzbar
+    import zxingcpp
     QR_SCANNER_AVAILABLE = True
 except ImportError:
     QR_SCANNER_AVAILABLE = False
-    print("⚠️ pyzbar not available - QR scanning disabled")
+    print("⚠️ zxing-cpp not available - QR scanning disabled")
 
 try:
     from djitellopy import Tello
@@ -91,23 +103,33 @@ class QRCodeScanner:
                 return None
             
             gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
-            qr_codes = pyzbar.decode(gray)
+            
+            # ใช้ zxing-cpp แทน pyzbar
+            results_zxing = zxingcpp.read_barcodes(gray)
             
             results = []
-            for qr_code in qr_codes:
-                qr_data = qr_code.data.decode('utf-8')
-                qr_type = qr_code.type
+            for result in results_zxing:
+                qr_data = result.text
+                qr_type = result.format.name
                 
-                points = qr_code.polygon
-                if len(points) == 4:
-                    center_x = sum([p.x for p in points]) // 4
-                    center_y = sum([p.y for p in points]) // 4
+                # แปลง position จาก zxing format
+                position = result.position
+                # zxing ให้ position เป็น 4 จุด [top-left, top-right, bottom-right, bottom-left]
+                x = min([p.x for p in position])
+                y = min([p.y for p in position]) 
+                w = max([p.x for p in position]) - x
+                h = max([p.y for p in position]) - y
+                
+                # ใช้ position จาก zxing แทน polygon จาก pyzbar
+                if len(position) == 4:
+                    center_x = sum([p.x for p in position]) // 4
+                    center_y = sum([p.y for p in position]) // 4
                     
                     result = {
                         'data': qr_data,
                         'type': qr_type,
                         'center': (center_x, center_y),
-                        'points': [(p.x, p.y) for p in points]
+                        'points': [(p.x, p.y) for p in position]
                     }
                     results.append(result)
                     
@@ -413,25 +435,26 @@ class DroneTello(Tello):
             return None
             
         try:
-            from pyzbar.pyzbar import decode
+            # ใช้ zxing-cpp แทน pyzbar
+            import zxingcpp
             image = cv2.imread(full_path)
             if image is None:
                 print(f"Cannot read image: {full_path}")
                 return None
                 
             gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
-            qr_codes = decode(gray)
+            results = zxingcpp.read_barcodes(gray)
             
-            if qr_codes:
+            if results:
                 # Return first QR code data
-                data = qr_codes[0].data.decode('utf-8')
+                data = results[0].text
                 print(f"QR Code detected in {filename}: {data}")
                 return data
             else:
                 print(f"No QR code detected in {filename}")
                 return None
         except ImportError:
-            print("pyzbar not available, using OpenCV QR detector")
+            print("zxing-cpp not available, using OpenCV QR detector")
             try:
                 image = cv2.imread(full_path)
                 gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
@@ -2138,7 +2161,8 @@ except ImportError:
     # Fallback class
     class ImprovedMissionPadDetector:
         def __init__(self, template_folder='mission_pad_templates'):
-            self.template_folder = template_folder
+            # ใช้ resource path ที่ถูกต้องสำหรับ PyInstaller
+            self.template_folder = get_resource_path(template_folder)
             self.templates = {}
             self.detection_enabled = False
             self.confidence_threshold = 0.3
@@ -2155,8 +2179,9 @@ except ImportError:
 # Fallback MissionPadDetector class
 if not MISSION_PAD_AVAILABLE:
     class MissionPadDetector:
-        def __init__(self, template_folder='D:/pythonforcoppelia/mission_pad_templates'):
-            self.template_folder = template_folder
+        def __init__(self, template_folder='mission_pad_templates'):
+            # ใช้ resource path ที่ถูกต้องสำหรับ PyInstaller
+            self.template_folder = get_resource_path(template_folder)
             self.templates = {}
             self.detection_enabled = False
             self.confidence_threshold = 0.3

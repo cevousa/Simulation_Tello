@@ -7,6 +7,7 @@ Mission Pad Detector - ปรับปรุงแล้ว
 import cv2
 import numpy as np
 import os
+import sys
 import time
 from datetime import datetime
 from skimage import metrics
@@ -14,6 +15,17 @@ from skimage.transform import resize
 from skimage.color import rgb2gray
 from skimage.feature import match_template
 import glob
+
+def get_resource_path(relative_path):
+    """ได้รับ path ที่ถูกต้องสำหรับ PyInstaller"""
+    try:
+        # PyInstaller สร้าง temp folder และเก็บ path ใน _MEIPASS
+        base_path = sys._MEIPASS
+    except Exception:
+        # ถ้าไม่ใช่ PyInstaller จะใช้ current directory
+        base_path = os.path.abspath(".")
+    
+    return os.path.join(base_path, relative_path)
 
 class MissionPadDetector:
     def __init__(self, template_folder="mission_pad_templates", threshold=0.15):  # ลด threshold
@@ -24,7 +36,8 @@ class MissionPadDetector:
             template_folder (str): โฟลเดอร์ที่เก็บรูปภาพ template
             threshold (float): ค่าเกณฑ์สำหรับการตรวจจับ (ลดลงเหลือ 0.15)
         """
-        self.template_folder = template_folder
+        # ใช้ resource path ที่ถูกต้องสำหรับ PyInstaller
+        self.template_folder = get_resource_path(template_folder)
         self.threshold = threshold
         self.templates = {}
         self.template_info = {}

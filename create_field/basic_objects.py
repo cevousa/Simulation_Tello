@@ -4,7 +4,19 @@ Basic Objects Creator Module
 """
 
 import os
+import sys
 import math
+
+def get_resource_path(relative_path):
+    """ได้รับ path ที่ถูกต้องสำหรับ PyInstaller"""
+    try:
+        # PyInstaller สร้าง temp folder และเก็บ path ใน _MEIPASS
+        base_path = sys._MEIPASS
+    except Exception:
+        # ถ้าไม่ใช่ PyInstaller จะใช้ current directory
+        base_path = os.path.abspath(".")
+    
+    return os.path.join(base_path, relative_path)
 
 class BasicObjectsCreator:
     """คลาสสำหรับสร้างวัตถุพื้นฐาน"""
@@ -397,8 +409,8 @@ class BasicObjectsCreator:
     def _add_qr_texture(self, object_handle, pad_number):
         """เพิ่ม QR Code texture"""
         try:
-            # พาธไฟล์ QR สำหรับแต่ละหมายเลข
-            qr_path = f"../mission_pad_templates/number_{pad_number}/missionpad_{pad_number}.png"
+            # พาธไฟล์ QR สำหรับแต่ละหมายเลข - ใช้ resource path
+            qr_path = get_resource_path(f"mission_pad_templates/number_{pad_number}/missionpad_{pad_number}.png")
             
             # ตรวจสอบไฟล์
             if not os.path.exists(qr_path):
