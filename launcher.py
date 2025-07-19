@@ -53,9 +53,9 @@ def launch_gui(gui_type):
 
 def show_about():
     """แสดงข้อมูลเกี่ยวกับโปรแกรม"""
-    about_text = """🏟️ Drone Odyssey Challenge Field Creator
+    about_text = """🏟️ Drone Simulator
 
-โปรแกรมสร้างสนามสำหรับการแข่งขัน Drone Odyssey Challenge
+โปรแกรมสร้างสนามสำหรับการแข่งขัน Drone Simulator
 
 🎯 Features:
 • Visual Field Designer
@@ -88,7 +88,7 @@ header_frame.pack_propagate(False)
 
 title_label = tk.Label(
     header_frame,
-    text="🏟️ Drone Odyssey Field Creator",
+    text="🏟️ Drone Simulator",
     font=('Arial', 18, 'bold'),
     fg='#ecf0f1',
     bg='#2c3e50'

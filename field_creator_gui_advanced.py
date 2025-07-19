@@ -46,7 +46,7 @@ class AdvancedFieldCreatorGUI:
     
     def __init__(self, root):
         self.root = root
-        self.root.title("🏟️ Drone Odyssey Field Creator Pro")
+        self.root.title("🏟️ sDrone Simulator")
         self.root.geometry("1400x900")
         self.root.configure(bg='#2c3e50')
         
@@ -97,7 +97,7 @@ class AdvancedFieldCreatorGUI:
         
         title_label = tk.Label(
             header_frame, 
-            text="🏟️ Drone Odyssey Challenge Field Creator Pro", 
+            text="🏟️ Drone Simsulator", 
             font=('Arial', 18, 'bold'),
             fg='#ecf0f1',
             bg='#2c3e50'
