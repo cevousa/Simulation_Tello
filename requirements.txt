@@ -10,3 +10,6 @@ cryptography
 pyyaml
 cbor2
 djitellopy
+PyJWT==2.4.0
+flask
+requests
